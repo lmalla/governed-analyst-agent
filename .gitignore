@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.ruff_cache/
+.pytest_cache/
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+evals/results/*.jsonl
+lineage/*.jsonl
+*.egg-info/
+.DS_Store

@@ -1,0 +1,19 @@
+[project]
+name = "governed-analyst-agent"
+version = "0.1.0"
+description = "Governed text-to-SQL agent prototype over BigQuery (Claude Agent SDK)."
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
