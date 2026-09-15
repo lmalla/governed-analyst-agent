@@ -170,10 +170,10 @@ Create the directories with a `.gitkeep` placeholder in each empty one:
 
 ```bash
 mkdir -p scripts data_gen dbt/seeds dbt/models/staging dbt/models/marts agent evals/cases evals/results
-touch scripts/.gitkeep data_gen/.gitkeep dbt/models/staging/.gitkeep dbt/models/marts/.gitkeep agent/.gitkeep evals/cases/.gitkeep
+touch scripts/.gitkeep data_gen/.gitkeep dbt/seeds/.gitkeep dbt/models/staging/.gitkeep dbt/models/marts/.gitkeep agent/.gitkeep evals/cases/.gitkeep evals/results/.gitkeep
 ```
 
-(`dbt/seeds/` and `evals/results/` are gitignored destinations for generated output — no `.gitkeep` needed there once real files land in later phases; add one now only if the directory would otherwise be empty and untracked: `touch dbt/seeds/.gitkeep`.)
+(Every currently-empty directory gets a `.gitkeep` so it survives a fresh clone — git does not track empty directories. `dbt/seeds/` and `evals/results/` will later hold gitignored generated output, but the directory entry itself still needs a tracked file until real content lands there.)
 
 Copy the spec:
 
