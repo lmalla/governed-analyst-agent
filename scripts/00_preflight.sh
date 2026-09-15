@@ -121,5 +121,5 @@ bq update --source "$POLICY_JSON" "${GCP_PROJECT_ID}:${BQ_DATASET}"
 echo
 echo "==> Pre-flight complete. Manual steps still required:"
 echo "    1. Set a billing budget + alert for ${GCP_PROJECT_ID} in the Cloud Console."
-echo "    2. Enable Claude models for ${GCP_PROJECT_ID} in Vertex AI Model Garden (region: \${CLOUD_ML_REGION})."
-echo "    3. Check BigQuery/Vertex quota for ${GCP_PROJECT_ID} is sufficient for this prototype."
+echo "    2. Create an Anthropic API key at https://console.anthropic.com and set ANTHROPIC_API_KEY in .env (not Vertex Model Garden — that path requires business verification)."
+echo "    3. Check BigQuery quota for ${GCP_PROJECT_ID} is sufficient for this prototype."

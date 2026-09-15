@@ -26,7 +26,7 @@ Build a 3-day prototype of a **governed text-to-SQL agent** over BigQuery that s
 ## 2. Rules for Claude Code
 
 1. **Never run commands that create, modify, or delete cloud resources** (`gcloud`, `bq`, `dbt run`, `terraform apply`). Write them into scripts and tell the human to run them. Read-only commands (`gcloud config list`, `bq ls`, `--dry_run`) are fine after asking.
-2. No secrets, keys, or service account JSON files in the repo. Auth is via `gcloud auth application-default login` plus service account impersonation only.
+2. No secrets, keys, or service account JSON files in the repo. The data/warehouse layer (BigQuery, IAM, lineage, tracing) authenticates via `gcloud auth application-default login` plus service account impersonation only — no keys, ever. The LLM layer is the one exception: Claude is accessed via the direct Anthropic API (not Vertex — see §4), which requires an `ANTHROPIC_API_KEY`. That key lives only in the local, gitignored `.env`, is never committed, and is never logged.
 3. All project-specific values come from `.env` (see §4). Never hardcode project IDs, emails, regions, or model IDs.
 4. Keep it small: Python 3.11+, `uv` for dependency management, `ruff` for lint, `pytest` for tests.
 5. Scripts must be idempotent (safe to re-run) and use `set -euo pipefail`.
@@ -96,11 +96,12 @@ BQ_LOCATION=US
 BQ_DATASET=governed_analytics
 USER_EMAIL=you@example.com          # human who impersonates personas
 
-# Claude on Vertex (used by the Claude Agent SDK)
-CLAUDE_CODE_USE_VERTEX=1
-CLOUD_ML_REGION=us-east5            # VERIFY: region where Claude is enabled in Model Garden
-ANTHROPIC_VERTEX_PROJECT_ID=${GCP_PROJECT_ID}
-AGENT_MODEL=                        # VERIFY: set from Model Garden
+# Claude via the direct Anthropic API (used by the Claude Agent SDK).
+# NOT Vertex AI Model Garden: that path gates Claude behind a business-
+# verification form not available to individual/personal GCP projects.
+# Get a key at https://console.anthropic.com — never commit it.
+ANTHROPIC_API_KEY=                  # VERIFY: create at console.anthropic.com, paste here only
+AGENT_MODEL=                        # VERIFY: exact current model ID, e.g. claude-sonnet-5-<version>
 REVIEWER_MODEL=                     # smaller/cheaper model
 GRADER_MODEL=                       # smaller/cheaper model
 
@@ -150,7 +151,7 @@ Build `scripts/00_preflight.sh` that:
 - Enables APIs: `bigquery`, `bigquerydatapolicy`, `datacatalog`, `datalineage`, `dataplex`, `aiplatform`, `cloudtrace`, `logging`, `iam`, `iamcredentials`.
 - Creates the dataset in `BQ_LOCATION`.
 - Creates the three persona service accounts and applies the IAM grants from §5.
-- Prints reminders for manual steps: set a billing budget + alert, enable Claude models in Vertex AI Model Garden, check quota.
+- Prints reminders for manual steps: set a billing budget + alert, create an Anthropic API key at console.anthropic.com (not Vertex Model Garden — see §2 Rule 2), check quota.
 
 **Done when:** script passes `shellcheck` and the human confirms it ran.
 
@@ -182,7 +183,7 @@ Build `scripts/00_preflight.sh` that:
      - Executes with the persona's credentials, `maximum_bytes_billed=MAX_BYTES_BILLED`, and job labels: `app=governed-agent`, `persona=<name>`, `trace_id=<otel trace id>`, `session_id=<uuid>`.
      - Returns at most `MAX_ROWS_RETURNED` rows. On permission errors, returns a clear structured error (not an exception) so the agent can explain the denial.
    - The persona is injected when the tool server is built. **No tool takes a persona argument.**
-3. `agent/agent.py`: Claude Agent SDK (Python, `claude-agent-sdk`) using Vertex via the env vars in §4.
+3. `agent/agent.py`: Claude Agent SDK (Python, `claude-agent-sdk`) using the direct Anthropic API via the env vars in §4 (`ANTHROPIC_API_KEY`, `AGENT_MODEL`).
    - Disable built-in file/shell/web tools; allow only the tools above.
    - System prompt: answer data questions using the tools; never attempt to bypass access errors; report denials plainly.
    - `mode=single`: one agent.

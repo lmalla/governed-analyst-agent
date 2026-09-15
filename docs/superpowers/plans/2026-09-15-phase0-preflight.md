@@ -121,9 +121,7 @@ REQUIRED_ENV_KEYS = [
     "BQ_LOCATION",
     "BQ_DATASET",
     "USER_EMAIL",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLOUD_ML_REGION",
-    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "ANTHROPIC_API_KEY",
     "AGENT_MODEL",
     "REVIEWER_MODEL",
     "GRADER_MODEL",
@@ -190,11 +188,12 @@ BQ_LOCATION=US
 BQ_DATASET=governed_analytics
 USER_EMAIL=you@example.com          # human who impersonates personas
 
-# Claude on Vertex (used by the Claude Agent SDK)
-CLAUDE_CODE_USE_VERTEX=1
-CLOUD_ML_REGION=us-east5            # VERIFY: region where Claude is enabled in Model Garden
-ANTHROPIC_VERTEX_PROJECT_ID=${GCP_PROJECT_ID}
-AGENT_MODEL=                        # VERIFY: set from Model Garden
+# Claude via the direct Anthropic API (used by the Claude Agent SDK).
+# NOT Vertex AI Model Garden: that path gates Claude behind a business-
+# verification form not available to individual/personal GCP projects.
+# Get a key at https://console.anthropic.com — never commit it.
+ANTHROPIC_API_KEY=                  # VERIFY: create at console.anthropic.com, paste here only
+AGENT_MODEL=                        # VERIFY: exact current model ID, e.g. claude-sonnet-5-<version>
 REVIEWER_MODEL=                     # smaller/cheaper model
 GRADER_MODEL=                       # smaller/cheaper model
 
@@ -478,8 +477,8 @@ bq update --source "$POLICY_JSON" "${GCP_PROJECT_ID}:${BQ_DATASET}"
 echo
 echo "==> Pre-flight complete. Manual steps still required:"
 echo "    1. Set a billing budget + alert for ${GCP_PROJECT_ID} in the Cloud Console."
-echo "    2. Enable Claude models for ${GCP_PROJECT_ID} in Vertex AI Model Garden (region: \${CLOUD_ML_REGION})."
-echo "    3. Check BigQuery/Vertex quota for ${GCP_PROJECT_ID} is sufficient for this prototype."
+echo "    2. Create an Anthropic API key at https://console.anthropic.com and set ANTHROPIC_API_KEY in .env (not Vertex Model Garden — that path requires business verification)."
+echo "    3. Check BigQuery quota for ${GCP_PROJECT_ID} is sufficient for this prototype."
 ```
 
 ```bash
@@ -534,7 +533,7 @@ Per BUILD_SPEC.md's top instruction ("stop, summarize what was built, list the c
   2. `gcloud auth application-default login`
   3. `make setup`
   4. `make preflight`
-  5. Manually: set a billing budget + alert, enable Claude in Vertex AI Model Garden, check quota (the script prints these reminders too).
+  5. Manually: set a billing budget + alert, create an Anthropic API key at console.anthropic.com, check quota (the script prints these reminders too).
 - Wait for the human to confirm the script ran successfully before Phase 1 begins.
 
 ---
