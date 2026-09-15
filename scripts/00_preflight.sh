@@ -88,8 +88,12 @@ echo "==> Granting roles/bigquery.dataViewer on dataset ${BQ_DATASET} to all per
 # bq's `add-iam-policy-binding` subcommand only supports tables/views, not datasets —
 # dataset-level IAM must go through a read-modify-write of the dataset's access array (see
 # https://docs.cloud.google.com/bigquery/docs/control-access-to-resources-iam).
-# VERIFY: `READER` is the dataset-ACL role name BigQuery is documented to store for
-# roles/bigquery.dataViewer — confirm this against a real `bq show` output on first run.
+# CONFIRMED (2026-09-15, project gcp-devops-476118): a real `bq show --format=prettyjson`
+# on this dataset shows every persona's grant as `"role": "READER"` — this is not a stale
+# spelling of roles/bigquery.dataViewer, it is what BigQuery actually stores and returns.
+# Do NOT "modernize" this to roles/bigquery.dataViewer: `bq show` would still read it back
+# as READER, the `if entry not in access` check below would stop matching, and every
+# re-run would append a duplicate ACL entry with no error to signal it.
 POLICY_JSON="$(mktemp)"
 trap 'rm -f "$POLICY_JSON"' EXIT
 bq show --format=prettyjson "${GCP_PROJECT_ID}:${BQ_DATASET}" > "$POLICY_JSON"
