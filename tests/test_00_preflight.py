@@ -78,3 +78,12 @@ def test_fails_fast_without_env_file():
     text = read_script()
     assert ".env" in text
     assert "exit 1" in text
+
+
+def test_dataset_reader_grant_uses_dataset_acl_update():
+    text = read_script()
+    assert "bq show --format=prettyjson" in text
+    assert "bq update --source" in text
+    assert '"role": "READER"' in text
+    # bq add-iam-policy-binding does not support datasets — must not be used for dataViewer
+    assert "bq add-iam-policy-binding" not in text

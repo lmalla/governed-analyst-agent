@@ -28,6 +28,13 @@ set +a
 : "${BQ_DATASET:?BQ_DATASET must be set in .env}"
 : "${USER_EMAIL:?USER_EMAIL must be set in .env}"
 
+for cmd in gcloud bq python3; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "ERROR: required command '$cmd' not found on PATH." >&2
+    exit 1
+  fi
+done
+
 PERSONAS=(persona-analyst persona-support-east persona-governance)
 APIS=(
   bigquery.googleapis.com
@@ -70,21 +77,46 @@ for persona in "${PERSONAS[@]}"; do
     --role="roles/bigquery.jobUser" \
     --condition=None >/dev/null
 
-  echo "==> Granting roles/bigquery.dataViewer on dataset ${BQ_DATASET} to ${SA_EMAIL}"
-  # VERIFY: confirm `bq add-iam-policy-binding` is the current bq CLI syntax
-  # for dataset-level IAM in your installed gcloud/bq version; older versions
-  # require patching the dataset ACL via `bq update` instead.
-  bq add-iam-policy-binding \
-    --member="serviceAccount:${SA_EMAIL}" \
-    --role="roles/bigquery.dataViewer" \
-    "${GCP_PROJECT_ID}:${BQ_DATASET}" >/dev/null
-
   echo "==> Granting roles/iam.serviceAccountTokenCreator on ${SA_EMAIL} to ${USER_EMAIL}"
   gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
     --project="${GCP_PROJECT_ID}" \
     --member="user:${USER_EMAIL}" \
     --role="roles/iam.serviceAccountTokenCreator" >/dev/null
 done
+
+echo "==> Granting roles/bigquery.dataViewer on dataset ${BQ_DATASET} to all personas"
+# bq's `add-iam-policy-binding` subcommand only supports tables/views, not datasets —
+# dataset-level IAM must go through a read-modify-write of the dataset's access array (see
+# https://docs.cloud.google.com/bigquery/docs/control-access-to-resources-iam).
+# VERIFY: `READER` is the dataset-ACL role name BigQuery is documented to store for
+# roles/bigquery.dataViewer — confirm this against a real `bq show` output on first run.
+POLICY_JSON="$(mktemp)"
+trap 'rm -f "$POLICY_JSON"' EXIT
+bq show --format=prettyjson "${GCP_PROJECT_ID}:${BQ_DATASET}" > "$POLICY_JSON"
+GCP_PROJECT_ID="${GCP_PROJECT_ID}" python3 - "$POLICY_JSON" "${PERSONAS[@]}" <<'PY'
+import json
+import os
+import sys
+
+path, personas = sys.argv[1], sys.argv[2:]
+project = os.environ["GCP_PROJECT_ID"]
+
+with open(path) as f:
+    dataset = json.load(f)
+
+access = dataset.setdefault("access", [])
+for persona in personas:
+    entry = {
+        "role": "READER",
+        "userByEmail": f"{persona}@{project}.iam.gserviceaccount.com",
+    }
+    if entry not in access:
+        access.append(entry)
+
+with open(path, "w") as f:
+    json.dump(dataset, f)
+PY
+bq update --source "$POLICY_JSON" "${GCP_PROJECT_ID}:${BQ_DATASET}"
 
 echo
 echo "==> Pre-flight complete. Manual steps still required:"
