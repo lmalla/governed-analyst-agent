@@ -1,4 +1,4 @@
-.PHONY: setup preflight lint data dbt-build policy-tags
+.PHONY: setup preflight lint data dbt-build policy-tags smoke
 
 setup:
 	uv sync --group dev
@@ -21,3 +21,6 @@ dbt-build:
 
 policy-tags:
 	set -a && . ./.env && set +a && uv run python scripts/01_policy_tags.py
+
+smoke:
+	set -a && . ./.env && set +a && bash scripts/smoke_test.sh
