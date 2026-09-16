@@ -1,3 +1,14 @@
+# NOTE: `policy_tags:` on a column below is a TOP-LEVEL column property
+# (a plain list), not nested under `config:`. Verified against installed
+# dbt-core 1.12.5 (dbt/parser/common.py ParserRef._add only copies
+# column.config["meta"]/["tags"] into the compiled ColumnConfig — any other
+# key nested under `config:`, including a `config.policy_tags`, is silently
+# dropped and never reaches the manifest) and dbt-bigquery 1.12.1
+# (impl.py's _update_column_dict reads `policy_tags` off the top-level
+# column dict when persisting docs via `dbt run`). Confirmed empirically:
+# `dbt parse --vars '{"pii_high": "dummy_pii_high", ...}'` produces a
+# compiled manifest.json with `dummy_pii_high` present in each column's
+# top-level `policy_tags`, and absent when nested under `config:`.
 version: 2
 
 models:
@@ -9,18 +20,24 @@ models:
         tests: [not_null, unique]
       - name: full_name
         description: Customer's full name.
+        policy_tags:
+          - "{{ var('pii_high') }}"
         config:
           meta:
             sensitivity: pii_high
             owner: governance
       - name: email
         description: Customer's email address.
+        policy_tags:
+          - "{{ var('pii_high') }}"
         config:
           meta:
             sensitivity: pii_high
             owner: governance
       - name: phone
         description: Customer's phone number.
+        policy_tags:
+          - "{{ var('pii_high') }}"
         config:
           meta:
             sensitivity: pii_high

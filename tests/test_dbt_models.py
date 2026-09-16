@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import yaml
@@ -152,3 +153,77 @@ def test_schema_yml_customer_id_columns_are_not_null_and_unique_on_customers():
     tests = columns["customer_id"].get("tests", [])
     assert "not_null" in tests
     assert "unique" in tests
+
+
+def test_dbt_project_yml_persists_docs_for_marts():
+    config = yaml.safe_load((DBT_DIR / "dbt_project.yml").read_text())
+    marts_config = config["models"]["governed_analyst_agent"]["marts"]
+    assert marts_config["+persist_docs"] == {"relation": True, "columns": True}
+
+
+def test_customers_pii_columns_have_policy_tags_config():
+    # policy_tags must be a top-level column property (a plain list),
+    # NOT nested under `config:`. Verified against the installed dbt-core
+    # 1.12.5 / dbt-bigquery 1.12.1: dbt/parser/common.py's ParserRef._add
+    # builds each column's ColumnConfig from only `column.config["meta"]`
+    # and `column.config["tags"]` — any other key inside `config:` (e.g. a
+    # nested `config.policy_tags`) is silently dropped and never reaches
+    # the compiled manifest, so dbt-bigquery's adapter (impl.py
+    # `_update_column_dict`, which reads `column_config.get("policy_tags")`
+    # off the top-level column dict) would see an empty list and clear
+    # any real policy tags on `dbt run`. Top-level `policy_tags:` instead
+    # flows through ColumnInfo's `_extra` (AdditionalPropertiesMixin) and
+    # is confirmed present in `dbt parse`'s compiled manifest.json with the
+    # rendered var value. See task-2-report.md for the manifest evidence.
+    schema = yaml.safe_load((MARTS_DIR / "schema.yml").read_text())
+    models_by_name = {m["name"]: m for m in schema["models"]}
+    columns = {c["name"]: c for c in models_by_name["customers"]["columns"]}
+    for col_name in ["email", "phone", "full_name"]:
+        names = columns[col_name].get("policy_tags", [])
+        assert any("pii_high" in n for n in names), (
+            f"customers.{col_name}.policy_tags should reference the pii_high var"
+        )
+
+
+def test_makefile_dbt_build_passes_vars_from_policy_tags_yml():
+    text = (REPO_ROOT / "Makefile").read_text()
+    assert "policy_tags.yml" in text
+    assert "--vars" in text
+
+
+def test_dbt_parse_with_dummy_policy_tag_vars_succeeds():
+    """dbt parse never opens a warehouse connection (confirmed in Plan A's
+    real run) — it only compiles Jinja/YAML, so this is safe to run for
+    real, with dummy var values standing in for the real resource names
+    Task 1 would produce. This is the plan's central verification: does
+    schema.yml's policy_tags config actually accept {{ var(...) }}?
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        profiles_dir = Path(tmp)
+        shutil.copy(DBT_DIR / "profiles.yml.example", profiles_dir / "profiles.yml")
+        env = {
+            **os.environ,
+            "GCP_PROJECT_ID": "dbt-parse-check",
+            "BQ_DATASET": "governed_analytics",
+            "BQ_LOCATION": "US",
+            "DBT_PROFILES_DIR": str(profiles_dir),
+        }
+        result = subprocess.run(
+            [
+                "dbt",
+                "parse",
+                "--project-dir",
+                str(DBT_DIR),
+                "--vars",
+                '{"pii_high": "dummy_pii_high", "pii_low": "dummy_pii_low"}',
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr

@@ -14,7 +14,10 @@ data:
 	uv run python data_gen/generate.py
 
 dbt-build:
-	set -a && . ./.env && set +a && cd dbt && dbt seed && dbt run && dbt test
+	set -a && . ./.env && set +a && cd dbt && \
+	dbt seed && \
+	dbt run --vars "$$(cat policy_tags.yml)" && \
+	dbt test
 
 policy-tags:
 	set -a && . ./.env && set +a && uv run python scripts/01_policy_tags.py

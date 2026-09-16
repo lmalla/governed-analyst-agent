@@ -31,6 +31,9 @@ models:
       +schema: staging
     marts:
       +materialized: table
+      +persist_docs:
+        relation: true
+        columns: true
 
 seeds:
   governed_analyst_agent:
