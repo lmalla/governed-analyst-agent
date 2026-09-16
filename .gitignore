@@ -9,6 +9,7 @@ dbt/dbt_packages/
 dbt/logs/
 dbt/profiles.yml
 dbt/.user.yml
+dbt/policy_tags.yml
 evals/results/*.jsonl
 lineage/*.jsonl
 *.egg-info/

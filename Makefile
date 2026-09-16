@@ -1,4 +1,4 @@
-.PHONY: setup preflight lint data dbt-build
+.PHONY: setup preflight lint data dbt-build policy-tags
 
 setup:
 	uv sync --group dev
@@ -15,3 +15,6 @@ data:
 
 dbt-build:
 	set -a && . ./.env && set +a && cd dbt && dbt seed && dbt run && dbt test
+
+policy-tags:
+	set -a && . ./.env && set +a && uv run python scripts/01_policy_tags.py

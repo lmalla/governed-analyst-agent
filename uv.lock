@@ -878,6 +878,7 @@ dependencies = [
     { name = "dbt-bigquery" },
     { name = "faker" },
     { name = "pyyaml" },
+    { name = "requests" },
 ]
 
 [package.dev-dependencies]
@@ -891,6 +892,7 @@ requires-dist = [
     { name = "dbt-bigquery", specifier = ">=1.8" },
     { name = "faker", specifier = ">=30.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "requests", specifier = ">=2.32" },
 ]
 
 [package.metadata.requires-dev]
