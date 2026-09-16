@@ -3,7 +3,9 @@ name = "governed-analyst-agent"
 version = "0.1.0"
 description = "Governed text-to-SQL agent prototype over BigQuery (Claude Agent SDK)."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "faker>=30.0",
+]
 
 [dependency-groups]
 dev = [
