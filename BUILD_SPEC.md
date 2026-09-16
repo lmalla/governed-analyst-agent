@@ -47,8 +47,6 @@ governed-analyst-agent/
 ├── scripts/
 │   ├── 00_preflight.sh          # APIs, budget reminder, persona SAs, IAM
 │   ├── 01_policy_tags.sh        # taxonomy + tags + fine-grained reader grants
-│   ├── 02_row_policies.sql      # row access policies (templated)
-│   ├── 03_apply_row_policies.sh # renders + runs 02 via bq
 │   └── smoke_test.sh            # same query as each persona
 ├── data_gen/
 │   └── generate.py              # Faker synthetic data + canary PII values
@@ -132,7 +130,7 @@ IAM per persona SA:
 Row access policy gotchas (must handle):
 - Once **any** row access policy exists on a table, principals not covered by a policy see **zero rows**. So create an `all_rows` policy (`FILTER USING (TRUE)`) granted to `analyst` and `governance`, plus an `east_only` policy for `support_east`.
 - Also grant `all_rows` to the dbt runner identity (the human user) so dbt tests still work.
-- Rebuilding a table with `CREATE OR REPLACE` drops row access policies. Re-apply them via a dbt `post-hook` or by running `make row-policies` after every `dbt build`. Prefer the post-hook.
+- Rebuilding a table with `CREATE OR REPLACE` drops row access policies. Re-apply them via a dbt `post-hook` on each mart, so they're reapplied automatically on every `dbt run` — no separate script to remember to re-run.
 - `orders` and `support_tickets` have no `region` column in the raw data (see §6 Phase 1) — only `customers` does. **Denormalize `region` onto `orders` and `support_tickets` in the dbt staging layer** (a join to `customers`) so all three marts carry a plain `region` column and `east_only` can use the same simple `region = 'East'` predicate everywhere, rather than a correlated subquery per table.
 
 Policy tags:
@@ -163,7 +161,7 @@ Build `scripts/00_preflight.sh` that:
    - `raw_support_tickets` (~3,000 rows: id, customer_id, created_at, category, priority, body)
    - **Canary values:** insert ~10 unique, easily detectable fake PII strings (e.g. `canary.<uuid>@example.test`, phone numbers with a reserved pattern) into customers and ticket bodies. Write them to `evals/canaries.json`. The leak scorer uses this file.
 2. dbt project (dbt-bigquery): staging models, then marts `customers`, `orders`, `support_tickets` with descriptions, `not_null`/`unique`/`relationships` tests, `meta` tags, and `policy_tags`. `stg_orders` and `stg_support_tickets` join to `stg_customers` to denormalize `region` onto those marts (raw data stays normalized; dbt derives the mart-level shape — see §5 row access policy gotchas). Row policy post-hook on each mart.
-3. `scripts/01_policy_tags.sh` and `scripts/03_apply_row_policies.sh` per §5. The policy tag resource names must be written back into a generated file (e.g. `dbt/policy_tags.yml` or dbt vars) so `schema.yml` doesn't hardcode them. **Prototype the full chain (taxonomy → tags → `persist_docs`/`policy_tags` → row access policy → smoke test) against `customers` only first.** This is the highest-risk new mechanism in the build — confirm it works end-to-end on one table before extending to `orders` and `support_tickets`.
+3. `scripts/01_policy_tags.sh` per §5: creates the taxonomy and policy tags, grants `governance` the fine-grained reader role, and writes the resulting policy tag resource names back into a generated file (`dbt/policy_tags.yml`, gitignored) so `schema.yml` doesn't hardcode them. Row access policies are applied via a dbt `post-hook` on each mart (see §5's row access policy gotchas) — no separate apply script. **Prototype the full chain (taxonomy → tags → `persist_docs`/`policy_tags` → row access policy post-hook → smoke test) against `customers` only first.** This is the highest-risk new mechanism in the build — confirm it works end-to-end on one table before extending to `orders` and `support_tickets`.
 4. `scripts/smoke_test.sh`: runs the same queries via `bq --impersonate_service_account` (VERIFY flag name) as each persona:
    - `SELECT region, COUNT(*) FROM customers GROUP BY region` → analyst/governance see 3 regions, support_east sees 1.
    - `SELECT email FROM customers LIMIT 5` → analyst and support_east get an access-denied error, governance succeeds.
@@ -239,7 +237,7 @@ ORDER BY creation_time DESC;
 
 ## 7. Makefile targets
 
-`setup`, `preflight`, `data`, `policy-tags`, `dbt-build`, `row-policies`, `smoke`, `ask`, `test`, `eval-single`, `eval-reviewed`, `lint`.
+`setup`, `preflight`, `data`, `policy-tags`, `dbt-build`, `smoke`, `ask`, `test`, `eval-single`, `eval-reviewed`, `lint`. (Row access policies are reapplied automatically by `dbt-build`'s post-hooks — no separate `row-policies` target.)
 
 ---
 
