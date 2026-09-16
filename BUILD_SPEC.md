@@ -46,7 +46,7 @@ governed-analyst-agent/
 ├── Makefile                     # wraps common commands
 ├── scripts/
 │   ├── 00_preflight.sh          # APIs, budget reminder, persona SAs, IAM
-│   ├── 01_policy_tags.sh        # taxonomy + tags + fine-grained reader grants
+│   ├── 01_policy_tags.py        # taxonomy + tags + fine-grained reader grants (Python: the stable gcloud data-catalog taxonomies command has no `create`)
 │   └── smoke_test.sh            # same query as each persona
 ├── data_gen/
 │   └── generate.py              # Faker synthetic data + canary PII values
@@ -161,7 +161,7 @@ Build `scripts/00_preflight.sh` that:
    - `raw_support_tickets` (~3,000 rows: id, customer_id, created_at, category, priority, body)
    - **Canary values:** insert ~10 unique, easily detectable fake PII strings (e.g. `canary.<uuid>@example.test`, phone numbers with a reserved pattern) into customers and ticket bodies. Write them to `evals/canaries.json`. The leak scorer uses this file.
 2. dbt project (dbt-bigquery): staging models, then marts `customers`, `orders`, `support_tickets` with descriptions, `not_null`/`unique`/`relationships` tests, `meta` tags, and `policy_tags`. `stg_orders` and `stg_support_tickets` join to `stg_customers` to denormalize `region` onto those marts (raw data stays normalized; dbt derives the mart-level shape — see §5 row access policy gotchas). Row policy post-hook on each mart.
-3. `scripts/01_policy_tags.sh` per §5: creates the taxonomy and policy tags, grants `governance` the fine-grained reader role, and writes the resulting policy tag resource names back into a generated file (`dbt/policy_tags.yml`, gitignored) so `schema.yml` doesn't hardcode them. Row access policies are applied via a dbt `post-hook` on each mart (see §5's row access policy gotchas) — no separate apply script. **Prototype the full chain (taxonomy → tags → `persist_docs`/`policy_tags` → row access policy post-hook → smoke test) against `customers` only first.** This is the highest-risk new mechanism in the build — confirm it works end-to-end on one table before extending to `orders` and `support_tickets`.
+3. `scripts/01_policy_tags.py` per §5: creates the taxonomy and policy tags, grants `governance` the fine-grained reader role, and writes the resulting policy tag resource names back into a generated file (`dbt/policy_tags.yml`, gitignored) so `schema.yml` doesn't hardcode them. Row access policies are applied via a dbt `post-hook` on each mart (see §5's row access policy gotchas) — no separate apply script. **Prototype the full chain (taxonomy → tags → `persist_docs`/`policy_tags` → row access policy post-hook → smoke test) against `customers` only first.** This is the highest-risk new mechanism in the build — confirm it works end-to-end on one table before extending to `orders` and `support_tickets`.
 4. `scripts/smoke_test.sh`: runs the same queries via `bq --impersonate_service_account` (VERIFY flag name) as each persona:
    - `SELECT region, COUNT(*) FROM customers GROUP BY region` → analyst/governance see 3 regions, support_east sees 1.
    - `SELECT email FROM customers LIMIT 5` → analyst and support_east get an access-denied error, governance succeeds.
