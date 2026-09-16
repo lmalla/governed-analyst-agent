@@ -19,9 +19,15 @@ def test_queries_as_all_three_personas():
         assert persona in text
 
 
-def test_uses_impersonate_service_account_flag():
+def test_uses_gcloud_config_impersonation():
     text = read_script()
-    assert "--impersonate_service_account" in text
+    assert "gcloud config set auth/impersonate_service_account" in text
+
+
+def test_has_access_denial_detection():
+    text = read_script()
+    assert "is_access_denied" in text
+    assert "access denied|permission_denied|does not have permission" in text
 
 
 def test_runs_region_count_query():

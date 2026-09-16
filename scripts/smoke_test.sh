@@ -30,15 +30,30 @@ set +a
 
 PERSONAS=(persona-analyst persona-support-east persona-governance)
 
+cleanup_impersonation() {
+  gcloud config unset auth/impersonate_service_account >/dev/null 2>&1 || true
+}
+trap cleanup_impersonation EXIT
+
 run_as_persona() {
   local persona="$1"
   local sql="$2"
   local sa_email="${persona}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
-  bq query \
-    --use_legacy_sql=false \
-    --project_id="${GCP_PROJECT_ID}" \
-    --impersonate_service_account="${sa_email}" \
-    "$sql"
+
+  gcloud config set auth/impersonate_service_account "${sa_email}" >/dev/null 2>&1
+
+  local output
+  local status=0
+  output=$(bq query --use_legacy_sql=false --project_id="${GCP_PROJECT_ID}" "$sql" 2>&1) || status=$?
+
+  gcloud config unset auth/impersonate_service_account >/dev/null 2>&1
+
+  echo "$output"
+  return "$status"
+}
+
+is_access_denied() {
+  echo "$1" | grep -qiE "access denied|permission_denied|does not have permission"
 }
 
 REGION_QUERY="SELECT region, COUNT(*) AS n FROM \`${GCP_PROJECT_ID}.${BQ_DATASET}.customers\` GROUP BY region"
@@ -46,13 +61,30 @@ EMAIL_QUERY="SELECT email FROM \`${GCP_PROJECT_ID}.${BQ_DATASET}.customers\` LIM
 
 for persona in "${PERSONAS[@]}"; do
   echo "==> [${persona}] region count query (expect 3 regions for analyst/governance, 1 for support_east)"
-  run_as_persona "$persona" "$REGION_QUERY" || echo "    QUERY FAILED for ${persona} (unexpected for this query)"
+  region_output=""
+  region_status=0
+  region_output=$(run_as_persona "$persona" "$REGION_QUERY") || region_status=$?
+  echo "$region_output"
+  if [[ $region_status -ne 0 ]]; then
+    if is_access_denied "$region_output"; then
+      echo "    DENIED (access control)"
+    else
+      echo "    UNEXPECTED FAILURE (not an access-denial pattern) — investigate the output above"
+    fi
+  fi
 
   echo "==> [${persona}] email query (expect success only for governance, denial otherwise)"
-  if run_as_persona "$persona" "$EMAIL_QUERY"; then
+  email_output=""
+  email_status=0
+  email_output=$(run_as_persona "$persona" "$EMAIL_QUERY") || email_status=$?
+  if [[ $email_status -eq 0 ]]; then
     echo "    SUCCEEDED — expected only for persona-governance"
+    echo "$email_output"
+  elif is_access_denied "$email_output"; then
+    echo "    DENIED (access control) — expected for analyst/support_east"
   else
-    echo "    DENIED — expected for analyst/support_east"
+    echo "    UNEXPECTED FAILURE (not an access-denial pattern) — investigate:"
+    echo "$email_output"
   fi
   echo
 done
