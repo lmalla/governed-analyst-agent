@@ -1,0 +1,20 @@
+name: 'governed_analyst_agent'
+version: '1.0.0'
+config-version: 2
+
+profile: 'governed_analyst_agent'
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  governed_analyst_agent:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table

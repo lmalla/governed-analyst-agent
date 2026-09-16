@@ -7,6 +7,8 @@ __pycache__/
 dbt/target/
 dbt/dbt_packages/
 dbt/logs/
+dbt/profiles.yml
+dbt/.user.yml
 evals/results/*.jsonl
 lineage/*.jsonl
 *.egg-info/

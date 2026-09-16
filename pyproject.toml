@@ -5,6 +5,8 @@ description = "Governed text-to-SQL agent prototype over BigQuery (Claude Agent 
 requires-python = ">=3.11"
 dependencies = [
     "faker>=30.0",
+    "dbt-bigquery>=1.8",
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]

@@ -1,0 +1,14 @@
+# Copy to dbt/profiles.yml (gitignored, same treatment as .env) before running
+# dbt for real. Every value is read from the environment — never hardcode a
+# project ID, dataset, or region here.
+governed_analyst_agent:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      dataset: "{{ env_var('BQ_DATASET') }}"
+      location: "{{ env_var('BQ_LOCATION') }}"
+      threads: 4
+      timeout_seconds: 300

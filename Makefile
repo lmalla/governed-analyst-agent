@@ -1,4 +1,4 @@
-.PHONY: setup preflight lint data
+.PHONY: setup preflight lint data dbt-build
 
 setup:
 	uv sync --group dev
@@ -12,3 +12,6 @@ lint:
 
 data:
 	uv run python data_gen/generate.py
+
+dbt-build:
+	cd dbt && dbt seed && dbt run && dbt test
