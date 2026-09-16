@@ -442,9 +442,11 @@ Expected: FAIL — none of the config changes exist yet.
 
 (Leave the rest of `dbt_project.yml`, including the `staging`/`seeds` schema isolation from Plan A's final-review fix, unchanged.)
 
-- [ ] **Step 4: Add policy_tags config to schema.yml's customers columns**
+- [ ] **Step 4: Add policy_tags to schema.yml's customers columns — as a top-level property, NOT nested under config**
 
-In `dbt/models/marts/schema.yml`, under `customers`, add a `policy_tags:` block inside each of `email`, `phone`, `full_name`'s existing `config:` block (alongside the `meta:` block already there from Plan A):
+**CONFIRMED (2026-09-16, verified twice independently — once by tracing dbt-core/dbt-bigquery source, once by re-deriving that trace and separately reproducing the manifest evidence in an isolated scratchpad):** `policy_tags:` nested under a column's `config:` block is a **silent no-op**. dbt-core's `ParserRef._add` (`dbt/parser/common.py`) only pulls `meta`/`tags` out of `config:`; any other nested key, including `policy_tags`, is dropped before the column ever reaches the compiled manifest. `dbt parse` reports success either way — it does not error, it just silently doesn't wire the tag. At real `dbt run` time, dbt-bigquery's `_update_column_dict` (`dbt/adapters/bigquery/impl.py`) reads `policy_tags` off the **top-level** serialized column dict, so a nested `config.policy_tags` would make it apply an *empty* list — clearing any real policy tags rather than setting them.
+
+The working shape, in `dbt/models/marts/schema.yml` under `customers`, is `policy_tags:` as a sibling of `config:`, not inside it:
 
 ```yaml
       - name: email
@@ -453,12 +455,11 @@ In `dbt/models/marts/schema.yml`, under `customers`, add a `policy_tags:` block 
           meta:
             sensitivity: pii_high
             owner: governance
-          policy_tags:
-            names:
-              - "{{ var('pii_high') }}"
+        policy_tags:
+          - "{{ var('pii_high') }}"
 ```
 
-Apply the same `policy_tags:` addition to `phone` and `full_name`'s existing `config:` blocks. Do **not** add it to `support_tickets.body` yet — that column is out of scope for this customers-only spike (Plan B2 extends it).
+Apply the same top-level `policy_tags:` addition to `phone` and `full_name` (their existing `config: {meta: {...}}` block stays as-is, unchanged). Do **not** add it to `support_tickets.body` yet — that column is out of scope for this customers-only spike (Plan B2 extends it).
 
 - [ ] **Step 5: Wire --vars into the Makefile's dbt-build target**
 
