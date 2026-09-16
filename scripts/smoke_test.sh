@@ -43,9 +43,15 @@ run_as_persona() {
   local extra_flags="${3:-}"
   local sa_email="${persona}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 
+  # bq's actual error text (e.g. "Access Denied: ...") goes to stderr, not
+  # stdout — merge it into the captured output so is_access_denied() can
+  # actually see it. Without this, a correctly-denied query's real denial
+  # text is lost, $email_output is empty, is_access_denied() evaluates
+  # false, and the check falls through to "unexpected failure" — a FAIL
+  # even when governance is configured perfectly.
   # shellcheck disable=SC2086
   CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT="${sa_email}" \
-    bq query --use_legacy_sql=false --project_id="${GCP_PROJECT_ID}" ${extra_flags} "$sql"
+    bq query --use_legacy_sql=false --project_id="${GCP_PROJECT_ID}" ${extra_flags} "$sql" 2>&1
 }
 
 is_access_denied() {
