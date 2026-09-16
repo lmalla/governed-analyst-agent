@@ -229,6 +229,47 @@ def test_dbt_parse_with_dummy_policy_tag_vars_succeeds():
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_dbt_parse_without_vars_fails():
+    """Pins the property that makes `make dbt-build` need --vars on every
+    dbt subcommand, not just `dbt run`: schema.yml's {{ var('pii_high') }}
+    is rendered during the full project parse that EVERY dbt command
+    performs (including `dbt seed`), so a plain `dbt parse` with no --vars
+    at all must fail. If this test ever starts passing, schema.yml no
+    longer genuinely requires pii_high/pii_low vars, and the Makefile's
+    dbt-build target (which passes --vars to seed/run/test) could safely
+    be simplified — until then, don't "fix" it back to passing --vars to
+    only one command.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        profiles_dir = Path(tmp)
+        shutil.copy(DBT_DIR / "profiles.yml.example", profiles_dir / "profiles.yml")
+        env = {
+            **os.environ,
+            "GCP_PROJECT_ID": "dbt-parse-check",
+            "BQ_DATASET": "governed_analytics",
+            "BQ_LOCATION": "US",
+            "DBT_PROFILES_DIR": str(profiles_dir),
+        }
+        result = subprocess.run(
+            ["dbt", "parse", "--project-dir", str(DBT_DIR)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode != 0, (
+            "dbt parse succeeded with no --vars at all — schema.yml no longer "
+            "requires pii_high/pii_low, which changes the reasoning behind "
+            "the Makefile passing --vars to every dbt subcommand.\n"
+            + result.stdout
+            + result.stderr
+        )
+
+
 def test_customers_model_has_row_access_policy_post_hook():
     text = (MARTS_DIR / "customers.sql").read_text()
     assert "post_hook" in text

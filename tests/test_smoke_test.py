@@ -19,9 +19,20 @@ def test_queries_as_all_three_personas():
         assert persona in text
 
 
-def test_uses_gcloud_config_impersonation():
+def test_uses_process_scoped_impersonation_env_var():
+    # CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT is process-scoped: unlike
+    # `gcloud config set auth/impersonate_service_account` (global config
+    # state), it cannot leak into concurrent processes or persist past a
+    # single command if the script exits abnormally.
     text = read_script()
-    assert "gcloud config set auth/impersonate_service_account" in text
+    assert "CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT" in text
+    # The old global-config-mutating invocations must be gone (a mention of
+    # `gcloud config set` in an explanatory comment about why it was
+    # replaced is fine; the actual command invocations are not).
+    assert "gcloud config set auth/impersonate_service_account" not in text
+    assert "gcloud config unset auth/impersonate_service_account" not in text
+    assert "trap" not in text
+    assert "cleanup_impersonation" not in text
 
 
 def test_has_access_denial_detection():
@@ -44,3 +55,29 @@ def test_no_hardcoded_project_values():
     text = read_script()
     assert "${GCP_PROJECT_ID}" in text
     assert "your-project-id" not in text
+
+
+def test_is_a_real_pass_fail_gate():
+    # The script must actually verify results, not just print them for a
+    # human to eyeball: it must track failures and exit non-zero when any
+    # governance check doesn't match the expected result.
+    text = read_script()
+    assert "FAILURES" in text
+    assert "exit 1" in text
+
+
+def test_region_query_result_is_compared_against_expected_count():
+    # A broken row access policy must produce a visible FAIL from the
+    # script itself, not just an eyeballed discrepancy.
+    text = read_script()
+    assert "expected_region_count" in text
+    assert "row_count" in text
+
+
+def test_email_query_success_message_is_persona_specific():
+    # persona-analyst successfully reading email (a total security
+    # collapse) must be flagged as a violation, not reported with a
+    # generic success message that reads as reassuring regardless of
+    # which persona actually succeeded.
+    text = read_script()
+    assert "SECURITY VIOLATION" in text

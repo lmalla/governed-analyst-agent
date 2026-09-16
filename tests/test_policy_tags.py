@@ -91,3 +91,22 @@ def test_writes_policy_tags_yaml_output():
     text = read_script()
     assert "policy_tags.yml" in text
     assert "pii_high" in text and "pii_low" in text
+
+
+def test_bq_location_is_lowercased_for_data_catalog_paths():
+    # BigQuery tolerates uppercase location values (.env.example ships
+    # BQ_LOCATION=US), but Data Catalog resource paths need the canonical
+    # lowercase location id. A raw, unlowered read of BQ_LOCATION would
+    # build a broken resource path.
+    text = read_script()
+    assert 'os.environ["BQ_LOCATION"].lower()' in text
+
+
+def test_uses_check_helper_instead_of_bare_raise_for_status():
+    # _check() surfaces Google's actual error.message from the response
+    # body; bare raise_for_status() discards it, leaving only an opaque
+    # "403 Client Error: Forbidden for url: ..." with no diagnosable
+    # reason (API not enabled, wrong location, missing permission, quota).
+    text = read_script()
+    assert "def _check(resp: requests.Response) -> requests.Response:" in text
+    assert "raise_for_status" not in text

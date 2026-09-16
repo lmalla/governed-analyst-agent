@@ -15,9 +15,11 @@ data:
 
 dbt-build:
 	set -a && . ./.env && set +a && cd dbt && \
-	dbt seed && \
-	dbt run --vars "$$(cat policy_tags.yml)" && \
-	dbt test
+	test -f policy_tags.yml || { echo "dbt/policy_tags.yml missing — run 'make policy-tags' first" >&2; exit 1; }; \
+	DBT_VARS="$$(cat policy_tags.yml)" && \
+	dbt seed --vars "$$DBT_VARS" && \
+	dbt run  --vars "$$DBT_VARS" && \
+	dbt test --vars "$$DBT_VARS"
 
 policy-tags:
 	set -a && . ./.env && set +a && uv run python scripts/01_policy_tags.py

@@ -466,12 +466,14 @@ Apply the same top-level `policy_tags:` addition to `phone` and `full_name` (the
 ```makefile
 dbt-build:
 	set -a && . ./.env && set +a && cd dbt && \
-	dbt seed && \
-	dbt run --vars "$$(cat policy_tags.yml)" && \
-	dbt test
+	test -f policy_tags.yml || { echo "dbt/policy_tags.yml missing — run 'make policy-tags' first" >&2; exit 1; }; \
+	DBT_VARS="$$(cat policy_tags.yml)" && \
+	dbt seed --vars "$$DBT_VARS" && \
+	dbt run  --vars "$$DBT_VARS" && \
+	dbt test --vars "$$DBT_VARS"
 ```
 
-`dbt/policy_tags.yml`'s content (`pii_high: "..."` / `pii_low: "..."`, produced by Task 1's script) is valid YAML, and dbt's `--vars` flag accepts a YAML string directly — no JSON conversion needed.
+`dbt/policy_tags.yml`'s content (`pii_high: "..."` / `pii_low: "..."`, produced by Task 1's script) is valid YAML, and dbt's `--vars` flag accepts a YAML string directly — no JSON conversion needed. `--vars` must be passed to **every** dbt invocation, not just `dbt run`: `schema.yml`'s `{{ var('pii_high') }}` is rendered during the full project parse that every dbt command performs (including `dbt seed`), so `dbt seed` without `--vars` fails immediately with `Required var 'pii_high' not found` before `dbt run` is ever reached. The `test -f policy_tags.yml` guard turns the ordering dependency on `make policy-tags` into a clear error instead of a bare `cat: No such file`.
 
 - [ ] **Step 6: Run the tests and confirm they pass**
 

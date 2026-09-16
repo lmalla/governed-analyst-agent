@@ -38,6 +38,19 @@ def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
+def _check(resp: requests.Response) -> requests.Response:
+    """Raise with Google's actual error.message from the response body,
+    instead of a bare '403 Client Error: Forbidden for url: ...' — this
+    script is never run by an agent to pre-diagnose issues, so the human
+    needs the real reason (API not enabled, wrong location, missing
+    permission, quota) in the first error, not a second round trip to
+    reproduce it with -v.
+    """
+    if not resp.ok:
+        raise RuntimeError(f"{resp.request.method} {resp.url} -> {resp.status_code}: {resp.text}")
+    return resp
+
+
 def _find_by_display_name(items: list, display_name: str):
     for item in items:
         if item.get("displayName") == display_name:
@@ -46,54 +59,58 @@ def _find_by_display_name(items: list, display_name: str):
 
 
 def ensure_taxonomy(token: str, parent: str) -> str:
-    resp = requests.get(f"{API}/{parent}/taxonomies", headers=_headers(token))
-    resp.raise_for_status()
+    resp = _check(requests.get(f"{API}/{parent}/taxonomies", headers=_headers(token)))
     existing = _find_by_display_name(resp.json().get("taxonomies", []), "data_sensitivity")
     if existing:
         return existing["name"]
-    resp = requests.post(
-        f"{API}/{parent}/taxonomies",
-        headers=_headers(token),
-        json={
-            "displayName": "data_sensitivity",
-            "activatedPolicyTypes": ["FINE_GRAINED_ACCESS_CONTROL"],
-        },
+    resp = _check(
+        requests.post(
+            f"{API}/{parent}/taxonomies",
+            headers=_headers(token),
+            json={
+                "displayName": "data_sensitivity",
+                "activatedPolicyTypes": ["FINE_GRAINED_ACCESS_CONTROL"],
+            },
+        )
     )
-    resp.raise_for_status()
     return resp.json()["name"]
 
 
 def ensure_policy_tag(token: str, taxonomy_name: str, display_name: str) -> str:
-    resp = requests.get(f"{API}/{taxonomy_name}/policyTags", headers=_headers(token))
-    resp.raise_for_status()
+    resp = _check(requests.get(f"{API}/{taxonomy_name}/policyTags", headers=_headers(token)))
     existing = _find_by_display_name(resp.json().get("policyTags", []), display_name)
     if existing:
         return existing["name"]
-    resp = requests.post(
-        f"{API}/{taxonomy_name}/policyTags",
-        headers=_headers(token),
-        json={"displayName": display_name},
+    resp = _check(
+        requests.post(
+            f"{API}/{taxonomy_name}/policyTags",
+            headers=_headers(token),
+            json={"displayName": display_name},
+        )
     )
-    resp.raise_for_status()
     return resp.json()["name"]
 
 
 def grant_fine_grained_reader(token: str, policy_tag_name: str, member: str) -> None:
-    resp = requests.post(f"{API}/{policy_tag_name}:getIamPolicy", headers=_headers(token))
-    resp.raise_for_status()
+    resp = _check(requests.post(f"{API}/{policy_tag_name}:getIamPolicy", headers=_headers(token)))
     policy = resp.json()
     updated = merge_binding(policy, FINE_GRAINED_READER_ROLE, member)
-    resp = requests.post(
-        f"{API}/{policy_tag_name}:setIamPolicy",
-        headers=_headers(token),
-        json={"policy": updated},
+    _check(
+        requests.post(
+            f"{API}/{policy_tag_name}:setIamPolicy",
+            headers=_headers(token),
+            json={"policy": updated},
+        )
     )
-    resp.raise_for_status()
 
 
 def main() -> None:
     project_id = os.environ["GCP_PROJECT_ID"]
-    location = os.environ["BQ_LOCATION"]
+    # BigQuery tolerates uppercase location values (e.g. .env.example's
+    # BQ_LOCATION=US), but Data Catalog resource names need the canonical
+    # lowercase form, and the taxonomy must live in the same location as
+    # the dataset it tags.
+    location = os.environ["BQ_LOCATION"].lower()
     parent = f"projects/{project_id}/locations/{location}"
 
     token = _get_access_token()
