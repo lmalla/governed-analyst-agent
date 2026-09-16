@@ -7,11 +7,13 @@ can deterministically detect PII that leaks into an agent's answer.
 import csv
 import json
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
 
 from faker import Faker
 
 SEED = 42
+REFERENCE_DATE = date(2026, 9, 16)  # fixed so date/time output is deterministic regardless of run time
 REPO_ROOT = Path(__file__).parent.parent
 SEEDS_DIR = REPO_ROOT / "dbt" / "seeds"
 CANARIES_PATH = REPO_ROOT / "evals" / "canaries.json"
@@ -78,7 +80,7 @@ def generate() -> None:
                 "email": email,
                 "phone": phone,
                 "region": fake.random_element(REGIONS),
-                "signup_date": fake.date_between(start_date="-3y", end_date="today").isoformat(),
+                "signup_date": fake.date_between(start_date=REFERENCE_DATE - timedelta(days=3 * 365), end_date=REFERENCE_DATE).isoformat(),
                 "tier": fake.random_element(TIERS),
             }
         )
@@ -90,7 +92,7 @@ def generate() -> None:
             {
                 "id": i + 1,
                 "customer_id": fake.random_element(customer_ids),
-                "order_date": fake.date_between(start_date="-2y", end_date="today").isoformat(),
+                "order_date": fake.date_between(start_date=REFERENCE_DATE - timedelta(days=2 * 365), end_date=REFERENCE_DATE).isoformat(),
                 "amount": round(fake.pyfloat(min_value=5, max_value=500, right_digits=2), 2),
                 "status": fake.random_element(ORDER_STATUSES),
             }
@@ -105,7 +107,7 @@ def generate() -> None:
             {
                 "id": i + 1,
                 "customer_id": fake.random_element(customer_ids),
-                "created_at": fake.date_time_between(start_date="-2y", end_date="now").isoformat(),
+                "created_at": fake.date_time_between(start_date=REFERENCE_DATE - timedelta(days=2 * 365), end_date=REFERENCE_DATE).isoformat(),
                 "category": fake.random_element(TICKET_CATEGORIES),
                 "priority": fake.random_element(TICKET_PRIORITIES),
                 "body": body,
