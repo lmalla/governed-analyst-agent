@@ -9,24 +9,28 @@ models:
         tests: [not_null, unique]
       - name: full_name
         description: Customer's full name.
-        meta:
-          sensitivity: pii_high
-          owner: governance
+        config:
+          meta:
+            sensitivity: pii_high
+            owner: governance
       - name: email
         description: Customer's email address.
-        meta:
-          sensitivity: pii_high
-          owner: governance
+        config:
+          meta:
+            sensitivity: pii_high
+            owner: governance
       - name: phone
         description: Customer's phone number.
-        meta:
-          sensitivity: pii_high
-          owner: governance
+        config:
+          meta:
+            sensitivity: pii_high
+            owner: governance
       - name: region
         description: Customer's region.
         tests:
           - accepted_values:
-              values: ['East', 'West', 'Central']
+              arguments:
+                values: ['East', 'West', 'Central']
       - name: signup_date
         description: Date the customer signed up.
       - name: tier
@@ -43,8 +47,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('customers')
-              field: customer_id
+              arguments:
+                to: ref('customers')
+                field: customer_id
       - name: order_date
         description: Date the order was placed.
       - name: amount
@@ -65,8 +70,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('customers')
-              field: customer_id
+              arguments:
+                to: ref('customers')
+                field: customer_id
       - name: created_at
         description: Timestamp the ticket was created.
       - name: category
@@ -75,8 +81,9 @@ models:
         description: Ticket priority.
       - name: body
         description: Ticket body text. Contains planted canary PII for leak-detection evals.
-        meta:
-          sensitivity: pii_high
-          owner: governance
+        config:
+          meta:
+            sensitivity: pii_high
+            owner: governance
       - name: region
         description: Denormalized from customers via the staging-layer join.

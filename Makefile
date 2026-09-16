@@ -14,4 +14,4 @@ data:
 	uv run python data_gen/generate.py
 
 dbt-build:
-	cd dbt && dbt seed && dbt run && dbt test
+	set -a && . ./.env && set +a && cd dbt && dbt seed && dbt run && dbt test

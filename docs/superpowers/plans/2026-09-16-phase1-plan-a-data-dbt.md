@@ -513,8 +513,28 @@ models:
   governed_analyst_agent:
     staging:
       +materialized: view
+      # Kept out of the plain BQ_DATASET (where the governed marts live) so
+      # that dataViewer on BQ_DATASET does not also expose raw/staging PII.
+      # dbt-bigquery's default generate_schema_name macro appends this to the
+      # target dataset as `<BQ_DATASET>_staging`; personas are never granted
+      # dataViewer on that derived dataset, so BigQuery denies them by
+      # default. Confirmed via dbt-bigquery source (BigQueryAdapter.create_schema
+      # in dbt/adapters/bigquery/impl.py, https://github.com/dbt-labs/dbt-bigquery/blob/main/dbt/adapters/bigquery/impl.py):
+      # every `dbt run`/`dbt seed` executes `CREATE SCHEMA IF NOT EXISTS` for
+      # a target schema/dataset that doesn't exist yet, so `<BQ_DATASET>_staging`
+      # is auto-created on first run/seed — no manual dataset creation or new
+      # IAM script needed — as long as the running principal (the human's own
+      # oauth ADC, who owns the project) has bigquery.datasets.create.
+      +schema: staging
     marts:
       +materialized: table
+
+seeds:
+  governed_analyst_agent:
+    # Same rationale as staging above: raw_customers/raw_orders/raw_support_tickets
+    # land in `<BQ_DATASET>_raw`, not the plain BQ_DATASET, and are
+    # auto-created the same way on first `dbt seed`.
+    +schema: raw
 ```
 
 ```yaml
@@ -613,24 +633,28 @@ models:
         tests: [not_null, unique]
       - name: full_name
         description: Customer's full name.
-        meta:
-          sensitivity: pii_high
-          owner: governance
+        config:
+          meta:
+            sensitivity: pii_high
+            owner: governance
       - name: email
         description: Customer's email address.
-        meta:
-          sensitivity: pii_high
-          owner: governance
+        config:
+          meta:
+            sensitivity: pii_high
+            owner: governance
       - name: phone
         description: Customer's phone number.
-        meta:
-          sensitivity: pii_high
-          owner: governance
+        config:
+          meta:
+            sensitivity: pii_high
+            owner: governance
       - name: region
         description: Customer's region.
         tests:
           - accepted_values:
-              values: ['East', 'West', 'Central']
+              arguments:
+                values: ['East', 'West', 'Central']
       - name: signup_date
         description: Date the customer signed up.
       - name: tier
@@ -647,8 +671,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('customers')
-              field: customer_id
+              arguments:
+                to: ref('customers')
+                field: customer_id
       - name: order_date
         description: Date the order was placed.
       - name: amount
@@ -669,8 +694,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('customers')
-              field: customer_id
+              arguments:
+                to: ref('customers')
+                field: customer_id
       - name: created_at
         description: Timestamp the ticket was created.
       - name: category
@@ -679,9 +705,10 @@ models:
         description: Ticket priority.
       - name: body
         description: Ticket body text. Contains planted canary PII for leak-detection evals.
-        meta:
-          sensitivity: pii_high
-          owner: governance
+        config:
+          meta:
+            sensitivity: pii_high
+            owner: governance
       - name: region
         description: Denormalized from customers via the staging-layer join.
 ```
@@ -706,7 +733,7 @@ Extend `Makefile`'s `.PHONY` line and add:
 
 ```makefile
 dbt-build:
-	cd dbt && dbt seed && dbt run && dbt test
+	set -a && . ./.env && set +a && cd dbt && dbt seed && dbt run && dbt test
 ```
 
 - [ ] **Step 11: Run the full suite once and commit**
