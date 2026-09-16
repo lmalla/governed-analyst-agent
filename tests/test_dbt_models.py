@@ -227,3 +227,30 @@ def test_dbt_parse_with_dummy_policy_tag_vars_succeeds():
             check=False,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_customers_model_has_row_access_policy_post_hook():
+    text = (MARTS_DIR / "customers.sql").read_text()
+    assert "post_hook" in text
+    assert "ROW ACCESS POLICY" in text
+    assert "all_rows" in text
+    assert "east_only" in text
+
+
+def test_all_rows_policy_grants_analyst_governance_and_human():
+    text = (MARTS_DIR / "customers.sql").read_text()
+    assert "persona-analyst" in text
+    assert "persona-governance" in text
+    assert "env_var('USER_EMAIL')" in text
+    assert "FILTER USING (TRUE)" in text
+
+
+def test_east_only_policy_grants_support_east_and_filters_region():
+    text = (MARTS_DIR / "customers.sql").read_text()
+    assert "persona-support-east" in text
+    assert "FILTER USING (region = 'East')" in text
+
+
+def test_row_access_policy_uses_this_not_hardcoded_table_path():
+    text = (MARTS_DIR / "customers.sql").read_text()
+    assert "{{ this }}" in text
