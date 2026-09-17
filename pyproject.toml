@@ -9,6 +9,8 @@ dependencies = [
     "pyyaml>=6.0",
     "requests>=2.32",
     "google-auth>=2.35",
+    "google-cloud-bigquery>=3.26",
+    "sqlglot>=25.0",
 ]
 
 [dependency-groups]

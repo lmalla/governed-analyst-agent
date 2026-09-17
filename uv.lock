@@ -878,8 +878,10 @@ dependencies = [
     { name = "dbt-bigquery" },
     { name = "faker" },
     { name = "google-auth" },
+    { name = "google-cloud-bigquery" },
     { name = "pyyaml" },
     { name = "requests" },
+    { name = "sqlglot" },
 ]
 
 [package.dev-dependencies]
@@ -893,8 +895,10 @@ requires-dist = [
     { name = "dbt-bigquery", specifier = ">=1.8" },
     { name = "faker", specifier = ">=30.0" },
     { name = "google-auth", specifier = ">=2.35" },
+    { name = "google-cloud-bigquery", specifier = ">=3.26" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32" },
+    { name = "sqlglot", specifier = ">=25.0" },
 ]
 
 [package.metadata.requires-dev]
