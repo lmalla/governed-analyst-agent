@@ -308,7 +308,7 @@ ask(question, persona, client, mode="single")
   -> _run_single()
       -> build_tool_server(client, persona, run_query_log)  # closures bind client+persona
       -> query_fn(prompt=question, options=...)             # SDK agent loop
-           -> model calls mcp__warehouse__run_query(sql=...)
+           -> model calls run_query(sql=...)  # bare tool name, not mcp__warehouse__run_query
                 -> wrapper: tools.run_query(client, sql, persona) -> {"denied": False, "rows": [...], ...}
                 -> run_query_log.append({"sql": sql, "result": {...}})
                 -> _wrap_tool_result(data={...}) -> {"content": [...]}  # back to model
