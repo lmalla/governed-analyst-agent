@@ -27,3 +27,15 @@ def resolve_persona_sa_email(persona: str) -> str:
         raise ValueError(f"Unknown persona: {persona!r}. Valid personas: {sorted(PERSONAS)}")
     sa_prefix = PERSONAS[persona]
     return f"{sa_prefix}@{get_project_id()}.iam.gserviceaccount.com"
+
+
+def get_agent_model() -> str:
+    return os.environ["AGENT_MODEL"]
+
+
+def get_reviewer_model() -> str:
+    return os.environ["REVIEWER_MODEL"]
+
+
+def get_agent_max_turns() -> int:
+    return int(os.environ.get("AGENT_MAX_TURNS", "8"))
