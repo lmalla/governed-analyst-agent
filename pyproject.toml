@@ -8,6 +8,7 @@ dependencies = [
     "dbt-bigquery>=1.8",
     "pyyaml>=6.0",
     "requests>=2.32",
+    "google-auth>=2.35",
 ]
 
 [dependency-groups]
