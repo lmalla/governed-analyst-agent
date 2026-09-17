@@ -75,6 +75,7 @@ models:
         description: Order status.
       - name: region
         description: Denormalized from customers via the staging-layer join.
+        tests: [not_null]
 
   - name: support_tickets
     description: One row per support ticket, denormalized with the customer's region.
@@ -106,3 +107,4 @@ models:
           - "{{ var('pii_high') }}"
       - name: region
         description: Denormalized from customers via the staging-layer join.
+        tests: [not_null]

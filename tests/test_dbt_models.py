@@ -155,6 +155,20 @@ def test_schema_yml_customer_id_columns_are_not_null_and_unique_on_customers():
     assert "unique" in tests
 
 
+def test_schema_yml_denormalized_region_columns_are_not_null_on_orders_and_support_tickets():
+    # orders.region and support_tickets.region are populated via a LEFT JOIN
+    # in the staging models — a NULL region would be invisible to the
+    # east_only row access policy's FILTER USING (region = 'East') predicate
+    # (NULL != 'East' in SQL), silently breaking row-level security for that
+    # row. Guard against that with a not_null test on both columns.
+    schema = yaml.safe_load((MARTS_DIR / "schema.yml").read_text())
+    models_by_name = {m["name"]: m for m in schema["models"]}
+    for model_name in ["orders", "support_tickets"]:
+        columns = {c["name"]: c for c in models_by_name[model_name]["columns"]}
+        tests = columns["region"].get("tests", [])
+        assert "not_null" in tests, f"{model_name}.region should have a not_null test"
+
+
 def test_dbt_project_yml_persists_docs_for_marts():
     config = yaml.safe_load((DBT_DIR / "dbt_project.yml").read_text())
     marts_config = config["models"]["governed_analyst_agent"]["marts"]

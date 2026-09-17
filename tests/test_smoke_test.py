@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -46,12 +47,12 @@ def test_runs_region_count_query():
     assert "SELECT region, COUNT(*)" in text or "select region, count(*)" in text.lower()
 
 
-def test_runs_email_query_expecting_denial_for_non_governance():
+def test_pii_query_is_templated_over_table_and_column():
     # The PII query is templated across tables/columns (see PII_CHECKS), so
     # the literal string "SELECT email" no longer appears verbatim in the
     # script — the templated construction is what runs the email query at
-    # execution time. test_checks_pii_governance_on_customers_email_and_support_tickets_body
-    # separately confirms "customers" and "email" both appear in the script.
+    # execution time. test_pii_checks_cover_exactly_the_pii_columns
+    # separately confirms the exact table:column pairs checked.
     text = read_script()
     assert "SELECT ${column}" in text
 
@@ -112,21 +113,17 @@ def test_run_as_persona_merges_stderr_only_for_denial_detection_path():
     assert len(without_merge) == 1, "exactly one bq query invocation (JSON-parsed region path) must NOT merge stderr"
 
 
+def _bash_array(text, name):
+    m = re.search(rf"^{name}=\((.*?)\)", text, re.DOTALL | re.MULTILINE)
+    assert m, f"{name} array not found"
+    return [w.strip().strip('"') for w in m.group(1).split() if w.strip()]
+
+
 def test_checks_region_governance_on_all_three_tables():
-    text = read_script()
-    for table in ["customers", "orders", "support_tickets"]:
-        assert table in text, f"smoke test should check {table}"
+    assert _bash_array(read_script(), "TABLES") == ["customers", "orders", "support_tickets"]
 
 
-def test_checks_pii_governance_on_customers_email_and_support_tickets_body():
-    text = read_script()
-    assert "customers" in text and "email" in text
-    assert "support_tickets" in text and "body" in text
-
-
-def test_no_pii_check_attempted_on_orders():
-    text = read_script()
-    # orders has no PII column (see BUILD_SPEC.md §5) — the PII-check list
-    # must not include it.
-    pii_checks_section = text.split("PII_CHECKS")[1] if "PII_CHECKS" in text else ""
-    assert "orders:" not in pii_checks_section
+def test_pii_checks_cover_exactly_the_pii_columns():
+    # Subsumes the negative case: "orders" cannot appear, since it's not in
+    # this exact set — orders has no PII columns per BUILD_SPEC.md §5.
+    assert set(_bash_array(read_script(), "PII_CHECKS")) == {"customers:email", "support_tickets:body"}
