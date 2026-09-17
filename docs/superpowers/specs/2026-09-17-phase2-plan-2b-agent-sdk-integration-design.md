@@ -50,20 +50,63 @@ Build `agent/agent.py` exposing one async function, `ask()`, that:
   `credentials.get_credentials(persona)` + `config.get_project_id()`) is exercised only
   in tests with a fake client — 2C's CLI is what will do this for real.
 
-## Claude Agent SDK API (as researched; see VERIFY markers in the plan)
+## Claude Agent SDK API — self-verified against the installed package
 
-- Package: `claude-agent-sdk` (add to `pyproject.toml`).
+Initial research (a subagent summarizing SDK docs) contained one real error, caught by
+directly installing `claude-agent-sdk==0.2.154` into a scratch venv and reading its actual
+source (`__init__.py`, `types.py`, `query.py`) rather than trusting the summary. The
+corrected findings below are read from the installed package itself, not guessed:
+
+- Package: `claude-agent-sdk` (PyPI, confirmed `0.2.154` current at design time; Python
+  3.10+). Add to `pyproject.toml`.
 - Custom tools: `@tool(name, description, input_schema)` decorator on an async function
-  returning `{"content": [{"type": "text", "text": ...}], "is_error": bool}`; grouped via
-  `create_sdk_mcp_server(name=..., version=..., tools=[...])`.
-- Tool restriction: `ClaudeAgentOptions(tools=[], mcp_servers={...}, allowed_tools=["mcp__<server>__*"])`
-  — `tools=[]` removes all built-ins; only the registered MCP tools remain callable.
+  taking one `args: dict` and returning `{"content": [{"type": "text", "text": ...}], "is_error": bool}`.
+  `input_schema` is a dict mapping param name to Python type (e.g. `{"sql": str}`, or `{}`
+  for no params). Grouped via `create_sdk_mcp_server(name=..., version=..., tools=[...])`.
+  **Confirmed safety net:** the SDK's own docstring states an exception raised inside a
+  tool handler is caught and reported as an `is_error` result automatically — a tool
+  wrapper that forgets to catch something does not crash the whole `query()` call. This
+  plan's explicit try/except in each wrapper (see below) is still needed to control the
+  *shape* of that error (the uniform envelope), not for crash-safety, which the SDK
+  already provides.
+- Tool restriction: `ClaudeAgentOptions(tools=[], mcp_servers={"warehouse": server})`
+  disables all built-in tools (`tools=[]` only affects built-ins, confirmed by its own
+  docstring — it does not touch MCP-registered tools). **Correction from initial
+  research:** `allowed_tools` takes the tool's bare `name` as given to `@tool(...)`
+  (confirmed directly from `create_sdk_mcp_server`'s own docstring example:
+  `allowed_tools=["add", "multiply"]` for tools named `"add"`/`"multiply"`) — there is no
+  `mcp__<server>__<tool>` wildcard pattern anywhere in the installed package's source.
+  This plan uses `allowed_tools=["list_tables", "describe_table", "run_query"]` (the exact
+  tool names Task 1 defines) so the three custom tools execute without an interactive
+  permission prompt — necessary since this SDK shells out to the `claude` CLI binary
+  under the hood, and the default `permission_mode` would otherwise block on a prompt no
+  one can answer in a non-interactive run.
 - Model selection: `ClaudeAgentOptions(model=...)`, sourced from `config.get_agent_model()`
-  for the drafting call and `config.get_reviewer_model()` for the review call.
-- `max_turns`: `ClaudeAgentOptions(max_turns=...)`, sourced from `config.get_agent_max_turns()`.
-- Results: iterate the async generator returned by `query(prompt=..., options=...)`;
-  the terminal `ResultMessage` carries `.result` (final text), `.usage` (dict with
-  `input_tokens`/`output_tokens`), `.session_id`, `.num_turns`, `.subtype`.
+  for the drafting call and `config.get_reviewer_model()` for the review call (both already
+  declared, currently blank, in `.env.example` — filled in by the human before running for
+  real).
+- `max_turns`: `ClaudeAgentOptions(max_turns=...)` — confirmed real field, `int | None`,
+  sourced from `config.get_agent_max_turns()`.
+- `query()`: confirmed signature `async def query(*, prompt: str | AsyncIterable[dict], options: ClaudeAgentOptions | None = None, transport=None) -> AsyncIterator[Message]` —
+  stateless, one-shot, exactly matching this plan's two-independent-calls design for
+  `mode="reviewed"` (no shared conversation state needed between the draft and review
+  calls).
+- Results: iterate the async generator; the terminal message where
+  `isinstance(message, ResultMessage)` carries `.result` (`str | None`, final text),
+  `.subtype` (`str`, e.g. `"success"`), `.session_id`, `.num_turns`,
+  `.usage` (confirmed `dict[str, Any]` — **untyped**, passed through verbatim from the CLI,
+  not a fixed dataclass). `# VERIFY:` this plan assumes the direct Anthropic Messages API's
+  standard `input_tokens`/`output_tokens` keys (well-established, unlikely to differ) and
+  reads them defensively via `.get(..., 0)` rather than direct indexing, so a naming
+  mismatch degrades to `0` instead of crashing `ask()`. Confirming the real key names
+  requires one live API call, which costs the human's `ANTHROPIC_API_KEY` budget — deferred
+  to the human's real-world verification pass (same rhythm as every prior plan), not run
+  by Claude Code itself.
+- Runtime prerequisite (operational, not code): this SDK is a Python wrapper around a
+  separately-installed `claude` CLI binary (`shutil.which("claude")`, confirmed in
+  `_internal/transport/subprocess_cli.py` — not vendored inside the pip package). Since
+  the human is running Claude Code itself to execute this project, that binary is already
+  on their PATH; noted here only so real-run failures aren't mistaken for a code bug.
 
 ## Architecture
 
@@ -140,7 +183,7 @@ async def _run_single(question: str, client, persona: str, max_turns: int, query
         model=config.get_agent_model(),
         tools=[],
         mcp_servers={"warehouse": server},
-        allowed_tools=["mcp__warehouse__*"],
+        allowed_tools=["list_tables", "describe_table", "run_query"],
         max_turns=max_turns,
         system_prompt=SYSTEM_PROMPT,
     )
@@ -232,8 +275,8 @@ async def ask(
         "tables_referenced": sorted({t for entry in run_query_log for t in entry["result"]["tables_referenced"]}),
         "bytes_processed": sum(entry["result"]["bytes_processed"] or 0 for entry in run_query_log),
         "denials": [entry for entry in run_query_log if entry["result"]["denied"]],
-        "input_tokens": usage["input_tokens"],
-        "output_tokens": usage["output_tokens"],
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
         "latency_ms": latency_ms,
         "trace_id": None,  # wired in Plan 2C once agent/telemetry.py exists
     }
