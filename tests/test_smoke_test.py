@@ -47,8 +47,13 @@ def test_runs_region_count_query():
 
 
 def test_runs_email_query_expecting_denial_for_non_governance():
+    # The PII query is templated across tables/columns (see PII_CHECKS), so
+    # the literal string "SELECT email" no longer appears verbatim in the
+    # script — the templated construction is what runs the email query at
+    # execution time. test_checks_pii_governance_on_customers_email_and_support_tickets_body
+    # separately confirms "customers" and "email" both appear in the script.
     text = read_script()
-    assert "SELECT email" in text or "select email" in text.lower()
+    assert "SELECT ${column}" in text
 
 
 def test_no_hardcoded_project_values():
@@ -105,3 +110,23 @@ def test_run_as_persona_merges_stderr_only_for_denial_detection_path():
     without_merge = [line for line in lines if "2>&1" not in line]
     assert len(with_merge) == 1, "exactly one bq query invocation (email/denial-detection path) must merge stderr"
     assert len(without_merge) == 1, "exactly one bq query invocation (JSON-parsed region path) must NOT merge stderr"
+
+
+def test_checks_region_governance_on_all_three_tables():
+    text = read_script()
+    for table in ["customers", "orders", "support_tickets"]:
+        assert table in text, f"smoke test should check {table}"
+
+
+def test_checks_pii_governance_on_customers_email_and_support_tickets_body():
+    text = read_script()
+    assert "customers" in text and "email" in text
+    assert "support_tickets" in text and "body" in text
+
+
+def test_no_pii_check_attempted_on_orders():
+    text = read_script()
+    # orders has no PII column (see BUILD_SPEC.md §5) — the PII-check list
+    # must not include it.
+    pii_checks_section = text.split("PII_CHECKS")[1] if "PII_CHECKS" in text else ""
+    assert "orders:" not in pii_checks_section

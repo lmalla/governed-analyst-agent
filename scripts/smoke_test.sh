@@ -2,15 +2,17 @@
 set -euo pipefail
 
 # scripts/smoke_test.sh
-# Runs the same two queries as each of the three personas via impersonated
-# service account credentials, to prove row/column-level governance is
-# actually enforced by the warehouse. Customers-only for this spike.
+# Runs region-count queries against all three governed tables (customers,
+# orders, support_tickets) and PII-column queries against the two tables
+# that have PII columns (customers.email, support_tickets.body), as each of
+# the three personas via impersonated service account credentials, to prove
+# row/column-level governance is actually enforced by the warehouse.
 # This is a pass/fail gate (exits non-zero on any unexpected result), not
 # just a report for a human to eyeball.
 #
 # Expected results:
 #   Region count query: analyst/governance see 3 regions, support_east sees 1.
-#   Email query: only governance succeeds; analyst/support_east are denied.
+#   PII column query: only governance succeeds; analyst/support_east are denied.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -96,53 +98,67 @@ record_result() {
   fi
 }
 
-REGION_QUERY="SELECT region, COUNT(*) AS n FROM \`${GCP_PROJECT_ID}.${BQ_DATASET}.customers\` GROUP BY region"
-EMAIL_QUERY="SELECT email FROM \`${GCP_PROJECT_ID}.${BQ_DATASET}.customers\` LIMIT 5"
+TABLES=(customers orders support_tickets)
+# table:column pairs — orders has no PII column (BUILD_SPEC.md §5), so it's
+# absent here. Plain "table:column" strings, not an associative array —
+# macOS's default bash (3.2) doesn't support those.
+PII_CHECKS=(
+  "customers:email"
+  "support_tickets:body"
+)
 
 for persona in "${PERSONAS[@]}"; do
-  echo "==> [${persona}] region count query"
-  region_output=""
-  region_status=0
-  region_output=$(run_as_persona_for_json "$persona" "$REGION_QUERY" "--format=json") || region_status=$?
+  for table in "${TABLES[@]}"; do
+    echo "==> [${persona}] ${table} region count query"
+    region_query="SELECT region, COUNT(*) AS n FROM \`${GCP_PROJECT_ID}.${BQ_DATASET}.${table}\` GROUP BY region"
+    region_output=""
+    region_status=0
+    region_output=$(run_as_persona_for_json "$persona" "$region_query" "--format=json") || region_status=$?
 
-  if [[ $region_status -eq 0 ]]; then
-    row_count=$(echo "$region_output" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "unparseable")
-    expected=$(expected_region_count "$persona")
-    if [[ "$row_count" == "$expected" ]]; then
-      record_result true "${persona} sees ${row_count} region(s) (expected ${expected})"
+    if [[ $region_status -eq 0 ]]; then
+      row_count=$(echo "$region_output" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "unparseable")
+      expected=$(expected_region_count "$persona")
+      if [[ "$row_count" == "$expected" ]]; then
+        record_result true "${persona} sees ${row_count} region(s) on ${table} (expected ${expected})"
+      else
+        record_result false "${persona} sees ${row_count} region(s) on ${table}, expected ${expected}. Output: ${region_output}"
+      fi
+    elif is_access_denied "$region_output"; then
+      record_result false "${persona} was denied the ${table} region query entirely (expected success). Output: ${region_output}"
     else
-      record_result false "${persona} sees ${row_count} region(s), expected ${expected}. Output: ${region_output}"
+      record_result false "${persona}'s ${table} region query failed unexpectedly (not an access-denial pattern): ${region_output}"
     fi
-  elif is_access_denied "$region_output"; then
-    record_result false "${persona} was denied the region query entirely (expected success). Output: ${region_output}"
-  else
-    record_result false "${persona}'s region query failed unexpectedly (not an access-denial pattern): ${region_output}"
-  fi
+  done
 
-  echo "==> [${persona}] email query"
-  email_output=""
-  email_status=0
-  email_output=$(run_as_persona_for_denial_check "$persona" "$EMAIL_QUERY") || email_status=$?
+  for check in "${PII_CHECKS[@]}"; do
+    table="${check%%:*}"
+    column="${check#*:}"
+    echo "==> [${persona}] ${table}.${column} query"
+    pii_query="SELECT ${column} FROM \`${GCP_PROJECT_ID}.${BQ_DATASET}.${table}\` LIMIT 5"
+    pii_output=""
+    pii_status=0
+    pii_output=$(run_as_persona_for_denial_check "$persona" "$pii_query") || pii_status=$?
 
-  if [[ "$persona" == "persona-governance" ]]; then
-    if [[ $email_status -eq 0 ]]; then
-      record_result true "governance can read email (expected)"
+    if [[ "$persona" == "persona-governance" ]]; then
+      if [[ $pii_status -eq 0 ]]; then
+        record_result true "governance can read ${table}.${column} (expected)"
+      else
+        record_result false "governance was denied ${table}.${column} access (expected success). Output: ${pii_output}"
+      fi
     else
-      record_result false "governance was denied email access (expected success). Output: ${email_output}"
+      if [[ $pii_status -ne 0 ]] && is_access_denied "$pii_output"; then
+        record_result true "${persona} denied ${table}.${column} access (expected)"
+      elif [[ $pii_status -eq 0 ]]; then
+        record_result false "SECURITY VIOLATION: ${persona} successfully read ${table}.${column} (must be denied). Output: ${pii_output}"
+      else
+        record_result false "${persona}'s ${table}.${column} query failed unexpectedly (not an access-denial pattern): ${pii_output}"
+      fi
     fi
-  else
-    if [[ $email_status -ne 0 ]] && is_access_denied "$email_output"; then
-      record_result true "${persona} denied email access (expected)"
-    elif [[ $email_status -eq 0 ]]; then
-      record_result false "SECURITY VIOLATION: ${persona} successfully read email (must be denied). Output: ${email_output}"
-    else
-      record_result false "${persona}'s email query failed unexpectedly (not an access-denial pattern): ${email_output}"
-    fi
-  fi
+  done
   echo
 done
 
-TOTAL=$((${#PERSONAS[@]} * 2))
+TOTAL=$((${#PERSONAS[@]} * (${#TABLES[@]} + ${#PII_CHECKS[@]})))
 PASSED=$((TOTAL - FAILURES))
 echo "==> Smoke test complete: ${PASSED}/${TOTAL} checks passed"
 if [[ $FAILURES -gt 0 ]]; then
