@@ -3,7 +3,7 @@ import json
 
 import pytest
 from claude_agent_sdk import ResultMessage
-from google.api_core.exceptions import Forbidden, NotFound
+from google.api_core.exceptions import BadRequest, Forbidden, NotFound
 
 from agent import tools as tools_module
 from agent.agent import _build_warehouse_tools, _wrap_tool_result, build_tool_server
@@ -136,6 +136,37 @@ def test_run_query_tool_catches_value_error_without_logging(monkeypatch):
     assert "SELECT/WITH" in payload["error"]
     assert result["is_error"] is True
     assert log == []  # never reached BigQuery, so nothing to log
+
+
+def test_run_query_tool_catches_not_found_without_logging(monkeypatch):
+    # tools.run_query's dry-run branch only wraps Forbidden internally, so a
+    # bad table/column name (NotFound or BadRequest) from the dry run can
+    # propagate out uncaught -- run_query_tool must still catch it and wrap
+    # it in the uniform {"ok": false, "error": ...} envelope, same as
+    # list_tables_tool/describe_table_tool already do.
+    def raise_not_found(client, sql, persona):
+        raise NotFound("Not found: Table proj.ds.bogus")
+    monkeypatch.setattr(tools_module, "run_query", raise_not_found)
+    by_name, log = _tools_by_name()
+    result = _run(by_name["run_query"].handler({"sql": "SELECT * FROM bogus"}))
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["ok"] is False
+    assert "not found" in payload["error"].lower()
+    assert result["is_error"] is True
+    assert log == []  # exception was caught before a query result existed to log
+
+
+def test_run_query_tool_catches_bad_request_without_logging(monkeypatch):
+    def raise_bad_request(client, sql, persona):
+        raise BadRequest("Invalid column name bogus_col")
+    monkeypatch.setattr(tools_module, "run_query", raise_bad_request)
+    by_name, log = _tools_by_name()
+    result = _run(by_name["run_query"].handler({"sql": "SELECT bogus_col FROM customers"}))
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["ok"] is False
+    assert "invalid column" in payload["error"].lower()
+    assert result["is_error"] is True
+    assert log == []
 
 
 def test_run_query_tool_input_schema_has_no_persona_field():
@@ -340,3 +371,127 @@ def test_ask_reviewed_mode_revised_replaces_draft(monkeypatch):
     ))
 
     assert result["answer"] == "Actually 2 regions after excluding test data."
+
+
+# --- _combine_draft_and_review: whitespace tolerance (finding 5) ---
+
+def test_combine_revised_tolerates_leading_whitespace():
+    result = _combine_draft_and_review("3 regions.", "  \nREVISED: Actually, 2 regions.")
+    assert result == "Actually, 2 regions."
+
+
+# --- _build_review_prompt: prompt-injection delimiters (finding 4) ---
+
+def test_build_review_prompt_wraps_inputs_in_delimiter_tags():
+    from agent.agent import _build_review_prompt
+    run_query_log = [{"sql": "SELECT 1", "result": {"denied": False}}]
+    prompt = _build_review_prompt("What is 1+1?", "It is 2.", run_query_log)
+    assert "<question>" in prompt and "</question>" in prompt
+    assert "<draft_answer>" in prompt and "</draft_answer>" in prompt
+    assert "<query_results>" in prompt and "</query_results>" in prompt
+    # the raw inputs land inside their tags
+    q_start = prompt.index("<question>")
+    q_end = prompt.index("</question>")
+    assert "What is 1+1?" in prompt[q_start:q_end]
+    d_start = prompt.index("<draft_answer>")
+    d_end = prompt.index("</draft_answer>")
+    assert "It is 2." in prompt[d_start:d_end]
+
+
+# --- _run_single / _run_reviewed: missing ResultMessage (finding 1) ---
+
+async def _empty_query_fn(*, prompt, options):
+    return
+    yield  # pragma: no cover - makes this an async generator
+
+
+def test_ask_single_mode_handles_empty_stream_without_crashing(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
+    monkeypatch.setenv("REVIEWER_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("AGENT_MAX_TURNS", "8")
+    result = _run(ask(
+        "How many regions?", "analyst", client=object(), mode="single",
+        query_fn=_empty_query_fn, tool_server_factory=_seeded_factory([]),
+    ))
+    assert result["answer"] == "[agent error: no result message received from the SDK]"
+    assert result["input_tokens"] == 0
+    assert result["output_tokens"] == 0
+
+
+def test_ask_reviewed_mode_falls_back_to_draft_when_review_stream_is_empty(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
+    monkeypatch.setenv("REVIEWER_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("AGENT_MAX_TURNS", "8")
+    draft_message = _result_message(result="3 regions.", usage={"input_tokens": 200, "output_tokens": 40})
+    call_count = {"n": 0}
+
+    async def sequenced_query_fn(*, prompt, options):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            yield draft_message
+        else:
+            return
+            yield  # pragma: no cover
+
+    result = _run(ask(
+        "How many regions?", "analyst", client=object(), mode="reviewed",
+        query_fn=sequenced_query_fn, tool_server_factory=_seeded_factory([]),
+    ))
+
+    assert result["answer"] == "3 regions."  # fail-safe to the draft
+    assert result["input_tokens"] == 200  # only the drafting call's usage counted
+    assert result["output_tokens"] == 40
+    assert call_count["n"] == 2  # the review call was still attempted
+
+
+def test_run_single_directly_handles_empty_stream_without_crashing(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
+    from agent.agent import _run_single
+    answer, run_query_log, usage = _run(_run_single(
+        "q", client=object(), persona="analyst", max_turns=8,
+        query_fn=_empty_query_fn, tool_server_factory=_seeded_factory([]),
+    ))
+    assert answer == "[agent error: no result message received from the SDK]"
+    assert run_query_log == []
+    assert usage == {}
+
+
+# --- ClaudeAgentOptions governance fields (findings 2 and 6) ---
+
+def test_ask_reviewed_mode_options_enforce_strict_governance(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
+    monkeypatch.setenv("REVIEWER_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("AGENT_MAX_TURNS", "8")
+
+    draft_message = _result_message(result="3 regions.", usage={"input_tokens": 200, "output_tokens": 40})
+    review_message = _result_message(result="APPROVED", usage={"input_tokens": 80, "output_tokens": 5})
+    captured_options = []
+
+    async def capturing_query_fn(*, prompt, options):
+        captured_options.append(options)
+        if len(captured_options) == 1:
+            yield draft_message
+        else:
+            yield review_message
+
+    _run(ask(
+        "How many regions?", "analyst", client=object(), mode="reviewed",
+        query_fn=capturing_query_fn, tool_server_factory=_seeded_factory([]),
+    ))
+
+    assert len(captured_options) == 2
+    draft_options, review_options = captured_options
+
+    # Draft (drafting) call: has the warehouse MCP server and the three
+    # allowed tools, plus both governance-hardening fields.
+    assert draft_options.tools == []
+    assert set(draft_options.mcp_servers) == {"warehouse"}
+    assert draft_options.allowed_tools == ["list_tables", "describe_table", "run_query"]
+    assert draft_options.strict_mcp_config is True
+    assert draft_options.setting_sources == []
+
+    # Review call: no mcp_servers at all -- the reviewer has no tools.
+    assert review_options.tools == []
+    assert not getattr(review_options, "mcp_servers", None)
+    assert review_options.strict_mcp_config is True
+    assert review_options.setting_sources == []
