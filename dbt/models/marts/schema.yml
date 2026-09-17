@@ -102,5 +102,7 @@ models:
           meta:
             sensitivity: pii_high
             owner: governance
+        policy_tags:
+          - "{{ var('pii_high') }}"
       - name: region
         description: Denormalized from customers via the staging-layer join.

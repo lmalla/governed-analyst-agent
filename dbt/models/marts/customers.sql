@@ -1,7 +1,8 @@
 -- Row access policies re-applied on every `dbt run` via post-hook, since
 -- CREATE OR REPLACE (this model's materialization) drops them otherwise
--- (see BUILD_SPEC.md §5). Scoped to `customers` only for this spike —
--- orders/support_tickets get the same pattern in a later plan.
+-- (see BUILD_SPEC.md §5). orders and support_tickets have the same pattern
+-- (see those models) — this was proven here first as a spike (Plan B1)
+-- before extending to them (Plan B2).
 {{ config(
     post_hook=[
         "CREATE OR REPLACE ROW ACCESS POLICY all_rows ON {{ this }} GRANT TO (\"serviceAccount:persona-analyst@{{ env_var('GCP_PROJECT_ID') }}.iam.gserviceaccount.com\", \"serviceAccount:persona-governance@{{ env_var('GCP_PROJECT_ID') }}.iam.gserviceaccount.com\", \"user:{{ env_var('USER_EMAIL') }}\") FILTER USING (TRUE)",

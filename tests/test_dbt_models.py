@@ -295,3 +295,118 @@ def test_east_only_policy_grants_support_east_and_filters_region():
 def test_row_access_policy_uses_this_not_hardcoded_table_path():
     text = (MARTS_DIR / "customers.sql").read_text()
     assert "{{ this }}" in text
+
+
+def test_orders_model_has_row_access_policy_post_hook():
+    text = (MARTS_DIR / "orders.sql").read_text()
+    assert "post_hook" in text
+    assert "ROW ACCESS POLICY" in text
+    assert "all_rows" in text
+    assert "east_only" in text
+    assert "{{ this }}" in text
+
+
+def test_orders_all_rows_policy_grants_analyst_governance_and_human():
+    text = (MARTS_DIR / "orders.sql").read_text()
+    assert "persona-analyst" in text
+    assert "persona-governance" in text
+    assert "env_var('USER_EMAIL')" in text
+    assert "FILTER USING (TRUE)" in text
+
+
+def test_orders_east_only_policy_grants_support_east_and_filters_region():
+    text = (MARTS_DIR / "orders.sql").read_text()
+    assert "persona-support-east" in text
+    assert "FILTER USING (region = 'East')" in text
+
+
+def test_support_tickets_model_has_row_access_policy_post_hook():
+    text = (MARTS_DIR / "support_tickets.sql").read_text()
+    assert "post_hook" in text
+    assert "ROW ACCESS POLICY" in text
+    assert "all_rows" in text
+    assert "east_only" in text
+    assert "{{ this }}" in text
+
+
+def test_support_tickets_all_rows_policy_grants_analyst_governance_and_human():
+    text = (MARTS_DIR / "support_tickets.sql").read_text()
+    assert "persona-analyst" in text
+    assert "persona-governance" in text
+    assert "env_var('USER_EMAIL')" in text
+    assert "FILTER USING (TRUE)" in text
+
+
+def test_support_tickets_east_only_policy_grants_support_east_and_filters_region():
+    text = (MARTS_DIR / "support_tickets.sql").read_text()
+    assert "persona-support-east" in text
+    assert "FILTER USING (region = 'East')" in text
+
+
+def test_support_tickets_body_has_top_level_policy_tags_config():
+    schema = yaml.safe_load((MARTS_DIR / "schema.yml").read_text())
+    models_by_name = {m["name"]: m for m in schema["models"]}
+    columns = {c["name"]: c for c in models_by_name["support_tickets"]["columns"]}
+    body_col = columns["body"]
+    # Top-level, NOT nested under config: — this is Plan B1's proven shape.
+    assert "policy_tags" not in body_col.get("config", {}), (
+        "policy_tags must NOT be nested under config: — this is a silent no-op "
+        "(see Plan B1's finding). It must be a top-level column property."
+    )
+    names = body_col.get("policy_tags", [])
+    assert any("pii_high" in n for n in names), (
+        "support_tickets.body's top-level policy_tags should reference the pii_high var"
+    )
+
+
+def test_orders_has_no_policy_tags_anywhere():
+    schema = yaml.safe_load((MARTS_DIR / "schema.yml").read_text())
+    models_by_name = {m["name"]: m for m in schema["models"]}
+    for column in models_by_name["orders"]["columns"]:
+        assert "policy_tags" not in column, (
+            f"orders.{column['name']} should not have policy_tags — orders has no PII "
+            "columns per BUILD_SPEC.md §5"
+        )
+
+
+def test_dbt_parse_tags_support_tickets_body_with_dummy_var():
+    """Extends the existing dbt-parse verification (Plan B1) to confirm
+    support_tickets.body actually receives the policy tag in the compiled
+    manifest, not just customers' columns."""
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        profiles_dir = Path(tmp)
+        shutil.copy(DBT_DIR / "profiles.yml.example", profiles_dir / "profiles.yml")
+        env = {
+            **os.environ,
+            "GCP_PROJECT_ID": "dbt-parse-check",
+            "BQ_DATASET": "governed_analytics",
+            "BQ_LOCATION": "US",
+            "DBT_PROFILES_DIR": str(profiles_dir),
+        }
+        result = subprocess.run(
+            [
+                "dbt",
+                "parse",
+                "--project-dir",
+                str(DBT_DIR),
+                "--vars",
+                '{"pii_high": "dummy_pii_high", "pii_low": "dummy_pii_low"}',
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        manifest = json.loads((DBT_DIR / "target" / "manifest.json").read_text())
+        node = next(
+            n
+            for n in manifest["nodes"].values()
+            if n["name"] == "support_tickets" and n["resource_type"] == "model"
+        )
+        assert node["columns"]["body"]["policy_tags"] == ["dummy_pii_high"]
