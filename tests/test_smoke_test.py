@@ -83,15 +83,25 @@ def test_email_query_success_message_is_persona_specific():
     assert "SECURITY VIOLATION" in text
 
 
-def test_run_as_persona_merges_stderr_into_captured_output():
-    # bq's actual error text (e.g. "Access Denied: ...") goes to stderr,
-    # not stdout. Without 2>&1 on the bq query invocation, a correctly
-    # denied query's $output is empty in run_as_persona's caller, so
-    # is_access_denied() can never see the denial text, and the check
-    # falls through to "unexpected failure" — a FAIL even when governance
-    # is configured perfectly. Regression test for that bug.
+def test_run_as_persona_merges_stderr_only_for_denial_detection_path():
+    # bq's actual error text (e.g. "Access Denied: ...") goes to stderr, not
+    # stdout — the email-query path needs 2>&1 so is_access_denied() can see
+    # it, or a correctly-denied query looks like an "unexpected failure"
+    # (FAIL even when governance is configured perfectly).
+    #
+    # But bq ALSO prints an informational "WARNING: This command is using
+    # service account impersonation..." notice to stderr on every call,
+    # success or failure — confirmed by a real run. Merging that into a
+    # --format=json-parsed query's output breaks json.load() on every
+    # persona, every time (a real "cries wolf" regression observed on the
+    # first real run of this script). The region-count query is never
+    # expected to be denied for any persona (row access policies filter
+    # rows, they don't deny the query), so it doesn't need stderr merged —
+    # only the email-query path does.
     text = read_script()
     lines = [line for line in text.splitlines() if "bq query" in line and "--use_legacy_sql" in line]
-    assert lines, "expected a bq query invocation line in the script"
-    for line in lines:
-        assert "2>&1" in line, f"bq query invocation must merge stderr into stdout: {line!r}"
+    assert len(lines) == 2, f"expected exactly two bq query invocation lines, found {len(lines)}"
+    with_merge = [line for line in lines if "2>&1" in line]
+    without_merge = [line for line in lines if "2>&1" not in line]
+    assert len(with_merge) == 1, "exactly one bq query invocation (email/denial-detection path) must merge stderr"
+    assert len(without_merge) == 1, "exactly one bq query invocation (JSON-parsed region path) must NOT merge stderr"

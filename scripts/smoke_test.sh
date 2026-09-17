@@ -37,21 +37,41 @@ FAILURES=0
 # credential loader shells out to gcloud, which honors it). Process-scoped:
 # unlike `gcloud config set`, it cannot leak into concurrent processes or
 # persist past this one command if the script exits abnormally.
-run_as_persona() {
+#
+# bq ALSO prints an informational "WARNING: This command is using service
+# account impersonation..." notice to stderr on every call, success or
+# failure (confirmed on a real run) — separate from any real error text.
+# Merging stderr is therefore only safe for output that gets pattern-matched
+# (is_access_denied), not for output that gets parsed as structured data
+# (--format=json), where that warning line breaks the parse every time.
+run_as_persona_for_denial_check() {
   local persona="$1"
   local sql="$2"
-  local extra_flags="${3:-}"
   local sa_email="${persona}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 
   # bq's actual error text (e.g. "Access Denied: ...") goes to stderr, not
   # stdout — merge it into the captured output so is_access_denied() can
   # actually see it. Without this, a correctly-denied query's real denial
-  # text is lost, $email_output is empty, is_access_denied() evaluates
-  # false, and the check falls through to "unexpected failure" — a FAIL
-  # even when governance is configured perfectly.
+  # text is lost, $output is empty, is_access_denied() evaluates false, and
+  # the check falls through to "unexpected failure" — a FAIL even when
+  # governance is configured perfectly.
+  CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT="${sa_email}" \
+    bq query --use_legacy_sql=false --project_id="${GCP_PROJECT_ID}" "$sql" 2>&1
+}
+
+run_as_persona_for_json() {
+  local persona="$1"
+  local sql="$2"
+  local extra_flags="$3"
+  local sa_email="${persona}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+
+  # No 2>&1 here: this output is parsed as JSON, and the query is never
+  # expected to be denied for any persona (row access policies filter rows,
+  # they don't deny the query) — so denial-detection isn't needed, and
+  # merging stderr would only ever break the parse.
   # shellcheck disable=SC2086
   CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT="${sa_email}" \
-    bq query --use_legacy_sql=false --project_id="${GCP_PROJECT_ID}" ${extra_flags} "$sql" 2>&1
+    bq query --use_legacy_sql=false --project_id="${GCP_PROJECT_ID}" ${extra_flags} "$sql"
 }
 
 is_access_denied() {
@@ -83,7 +103,7 @@ for persona in "${PERSONAS[@]}"; do
   echo "==> [${persona}] region count query"
   region_output=""
   region_status=0
-  region_output=$(run_as_persona "$persona" "$REGION_QUERY" "--format=json") || region_status=$?
+  region_output=$(run_as_persona_for_json "$persona" "$REGION_QUERY" "--format=json") || region_status=$?
 
   if [[ $region_status -eq 0 ]]; then
     row_count=$(echo "$region_output" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "unparseable")
@@ -102,7 +122,7 @@ for persona in "${PERSONAS[@]}"; do
   echo "==> [${persona}] email query"
   email_output=""
   email_status=0
-  email_output=$(run_as_persona "$persona" "$EMAIL_QUERY") || email_status=$?
+  email_output=$(run_as_persona_for_denial_check "$persona" "$EMAIL_QUERY") || email_status=$?
 
   if [[ "$persona" == "persona-governance" ]]; then
     if [[ $email_status -eq 0 ]]; then
