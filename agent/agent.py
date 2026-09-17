@@ -5,12 +5,13 @@ helpers). mode=single/reviewed and the public ask() entry point are added on top
 of this same file by a later task.
 """
 import json
+import time
 
-from claude_agent_sdk import create_sdk_mcp_server, tool
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, create_sdk_mcp_server, query, tool
 from google.api_core.exceptions import BadRequest, Forbidden, NotFound
 from google.cloud import bigquery
 
-from agent import tools
+from agent import config, tools
 
 
 def _wrap_tool_result(data=None, error=None) -> dict:
@@ -97,3 +98,163 @@ SYSTEM_PROMPT = (
     "restriction, never attempt to work around it or guess at the restricted "
     "data — report the denial to the user plainly, as part of your answer."
 )
+
+REVIEWER_SYSTEM_PROMPT = (
+    "You are reviewing a data analyst agent's draft answer for correctness and "
+    "for any restricted or PII data that should not have been included. You "
+    "will be given the original question, the draft answer, and the SQL "
+    "queries that were run with their results. You have no tools and cannot "
+    "run new queries — review only what you are given. "
+    "Respond with exactly one of two forms, and always start your response "
+    "with one of these two literal tokens: "
+    "'APPROVED' if the draft answer is correct and contains no restricted "
+    "data, or 'REVISED: <corrected answer>' if it needs correction."
+)
+
+
+def _default_tool_server_factory(client: bigquery.Client, persona: str):
+    """Builds a fresh tool server and the run_query_log it logs into.
+
+    Split out as its own factory (rather than inlined in _run_single) so
+    tests can inject a pre-seeded run_query_log and a trivial fake server —
+    letting orchestration tests (does ask() correctly read a ResultMessage
+    and assemble the structured result) run independently of the tool-
+    wrapper tests Task 1 already covers.
+    """
+    run_query_log: list[dict] = []
+    server = build_tool_server(client, persona, run_query_log)
+    return server, run_query_log
+
+
+def _build_review_prompt(question: str, draft_answer: str, run_query_log: list[dict]) -> str:
+    queries_summary = json.dumps(
+        [{"sql": entry["sql"], "result": entry["result"]} for entry in run_query_log],
+        indent=2,
+        default=str,
+    )
+    return (
+        f"Original question: {question}\n\n"
+        f"Draft answer: {draft_answer}\n\n"
+        f"SQL queries run and their results:\n{queries_summary}"
+    )
+
+
+def _combine_draft_and_review(draft: str, review_text: str) -> str:
+    if review_text.startswith("REVISED:"):
+        return review_text.removeprefix("REVISED:").strip()
+    return draft  # covers "APPROVED" and any unrecognized response, fail-safe to the draft
+
+
+def _sum_usage(usage_a: dict, usage_b: dict) -> dict:
+    return {
+        "input_tokens": usage_a.get("input_tokens", 0) + usage_b.get("input_tokens", 0),
+        "output_tokens": usage_a.get("output_tokens", 0) + usage_b.get("output_tokens", 0),
+    }
+
+
+async def _run_single(
+    question: str,
+    client: bigquery.Client,
+    persona: str,
+    max_turns: int,
+    query_fn,
+    tool_server_factory=_default_tool_server_factory,
+):
+    """Runs one drafting agent call. Returns (answer_text, run_query_log, usage)."""
+    server, run_query_log = tool_server_factory(client, persona)
+    options = ClaudeAgentOptions(
+        model=config.get_agent_model(),
+        tools=[],
+        mcp_servers={"warehouse": server},
+        allowed_tools=["list_tables", "describe_table", "run_query"],
+        max_turns=max_turns,
+        system_prompt=SYSTEM_PROMPT,
+    )
+    result_message = None
+    async for message in query_fn(prompt=question, options=options):
+        if isinstance(message, ResultMessage):
+            result_message = message
+    return result_message.result or "", run_query_log, result_message.usage or {}
+
+
+async def _run_reviewed(
+    question: str,
+    client: bigquery.Client,
+    persona: str,
+    max_turns: int,
+    query_fn,
+    tool_server_factory=_default_tool_server_factory,
+):
+    """Runs the drafting call, then a deterministic, tools-disabled review call.
+
+    Review always happens for mode="reviewed" — it is not left to the drafting
+    agent's discretion whether to invoke a reviewer.
+    """
+    draft, run_query_log, usage_1 = await _run_single(
+        question, client, persona, max_turns, query_fn, tool_server_factory
+    )
+    review_prompt = _build_review_prompt(question, draft, run_query_log)
+    review_options = ClaudeAgentOptions(
+        model=config.get_reviewer_model(),
+        tools=[],
+        max_turns=1,
+        system_prompt=REVIEWER_SYSTEM_PROMPT,
+    )
+    review_result_message = None
+    async for message in query_fn(prompt=review_prompt, options=review_options):
+        if isinstance(message, ResultMessage):
+            review_result_message = message
+    final_answer = _combine_draft_and_review(draft, review_result_message.result or "")
+    combined_usage = _sum_usage(usage_1, review_result_message.usage or {})
+    return final_answer, run_query_log, combined_usage
+
+
+async def ask(
+    question: str,
+    persona: str,
+    client: bigquery.Client,
+    mode: str = "single",
+    query_fn=query,
+    tool_server_factory=_default_tool_server_factory,
+) -> dict:
+    if persona not in config.PERSONAS:
+        raise ValueError(f"Unknown persona: {persona!r}. Valid personas: {sorted(config.PERSONAS)}")
+    if mode not in ("single", "reviewed"):
+        raise ValueError(f"Unknown mode: {mode!r}. Valid modes: 'single', 'reviewed'")
+
+    max_turns = config.get_agent_max_turns()
+    start = time.monotonic()
+    if mode == "single":
+        answer, run_query_log, usage = await _run_single(
+            question, client, persona, max_turns, query_fn, tool_server_factory
+        )
+    else:
+        answer, run_query_log, usage = await _run_reviewed(
+            question, client, persona, max_turns, query_fn, tool_server_factory
+        )
+    latency_ms = int((time.monotonic() - start) * 1000)
+
+    return {
+        "answer": answer,
+        "sql_list": [entry["sql"] for entry in run_query_log],
+        "job_ids": [
+            entry["result"]["job_id"] for entry in run_query_log
+            if entry["result"]["job_id"] is not None
+        ],
+        "tables_referenced": sorted(
+            {t for entry in run_query_log for t in entry["result"]["tables_referenced"]}
+        ),
+        "bytes_processed": sum(
+            entry["result"]["bytes_processed"] or 0 for entry in run_query_log
+        ),
+        "denials": [entry for entry in run_query_log if entry["result"]["denied"]],
+        # VERIFY: ResultMessage.usage is an untyped dict (claude_agent_sdk 0.2.154's
+        # own type hint is dict[str, Any]) — input_tokens/output_tokens assumed to
+        # match the direct Anthropic Messages API's standard usage keys. .get(...)
+        # degrades to 0 rather than raising if that assumption is wrong; confirm
+        # against a real call during human-run real-world verification.
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "latency_ms": latency_ms,
+        "trace_id": None,  # wired in Plan 2C once agent/telemetry.py exists
+    }
