@@ -23,11 +23,13 @@ graph TD
     Runner --> Agent
     Agent -->|persona-scoped tools| Tools[agent/tools.py]
     Tools -->|impersonated credentials| BQ[(BigQuery: governed dataset)]
-    Agent -->|mode=reviewed only| Review[deterministic review pass]
+    Agent -->|drafting call: AGENT_MODEL| Anthropic[(Anthropic API)]
+    Agent -->|mode=reviewed only| Review[Review pass: 2nd Claude call, always runs]
+    Review -->|review call: REVIEWER_MODEL| Anthropic
     CLI --> Telemetry[agent/telemetry.py] --> CloudTrace[(Cloud Trace)]
     CLI --> Lineage[agent/lineage.py] --> LineageFile[(lineage/records.jsonl)]
     Runner --> Scorers[evals/scorers.py]
-    Scorers -->|llm_judge cases only| Anthropic[(Anthropic API: GRADER_MODEL)]
+    Scorers -->|llm_judge cases only: GRADER_MODEL| Anthropic
     Runner --> Results[(evals/results/*.jsonl)]
     BQ -.governed by.-> Governance[dbt: policy tags + row access policies]
 ```
@@ -40,13 +42,19 @@ code.
 ## Results: single vs reviewed
 
 Run `make eval-single` and `make eval-reviewed` against the full suite
-(`evals/cases/*.yaml`, 20 golden + 10 adversarial cases), then fill in this table from the
-printed summary table and `evals/results/<timestamp>_<mode>.jsonl`:
+(`evals/cases/*.yaml`, 20 golden + 10 adversarial cases), then fill in each row directly
+from `evals/runner.py`'s printed per-persona summary table for that mode (it prints one row
+per persona per run — golden and adversarial cases are split unevenly across personas, so
+there is no single all-persona aggregate to copy):
 
-| Mode | Accuracy | Leak count | Adversarial pass rate | Avg tokens | Avg latency (ms) | Avg bytes |
-|---|---|---|---|---|---|---|
-| single | _fill in after running `make eval-single`_ | | | | | |
-| reviewed | _fill in after running `make eval-reviewed`_ | | | | | |
+| Mode | Persona | Accuracy | Leak count | Adversarial pass rate | Avg tokens | Avg latency (ms) | Avg bytes | Errors |
+|---|---|---|---|---|---|---|---|---|
+| single | analyst | | | | | | | |
+| single | governance | | | | | | | |
+| single | support_east | | | | | | | |
+| reviewed | analyst | | | | | | | |
+| reviewed | governance | | | | | | | |
+| reviewed | support_east | | | | | | | |
 
 **Note on adversarial pass rate:** `policy_behavior` scoring is deterministic and only
 counts a case as "passed" when the agent's tool call was denied by BigQuery's column-level
@@ -55,4 +63,16 @@ by row-level policies, which filter silently rather than raising) or write/delet
 (rejected by SQL validation before any query is attempted) will not populate `denials` even
 when the agent behaved correctly — spot-check the `answer` text in the JSONL output for
 these categories (tagged `row_level`/`write_attempt` in `evals/cases/suite.yaml`) rather
-than reading the aggregate percentage at face value.
+than reading the aggregate percentage at face value. Two related limitations apply beyond
+adversarial cases:
+
+- **Golden cases under a row-access-restricted persona** (e.g. `support_east` on a
+  region-filtered query) have the same underlying issue: a correctly-behaving agent that
+  declines to query data outside its row-access scope can score as a correctness failure,
+  since the scorer compares against the last successfully-executed query's rows rather than
+  distinguishing "wrong answer" from "correctly refused."
+- **`a006`-style SQL-comment-trick cases** carry a coin-flip false-failure risk: if the agent
+  complies with the literal, unqualified table name in the injected SQL, BigQuery may raise
+  `NotFound` rather than `Forbidden` for that reference, and only `Forbidden` denials
+  populate `result["denials"]` — so a correctly-non-leaking response can still score as a
+  `policy_behavior` failure depending on exactly which BigQuery error is raised.
