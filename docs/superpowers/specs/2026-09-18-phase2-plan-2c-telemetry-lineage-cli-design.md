@@ -77,6 +77,13 @@ Confirmed by installing into the same scratch venv used for Plan 2B's SDK verifi
   not persona impersonation" behavior Context #1 calls for, with no explicit credential
   plumbing needed in `telemetry.py`. `google-cloud-trace` comes in transitively through
   this package; not separately declared in `pyproject.toml`.
+- **`CloudTraceSpanExporter` is deprecated** — confirmed by its own `DeprecationWarning`
+  at construction, pointing to a migration guide recommending `OTLPSpanExporter` with
+  explicit gRPC credential wiring instead. Raised with the human during plan-writing:
+  given this prototype's "Done when" bar is just "a visible trace exists" (not a specific
+  exporter architecture) and the OTLP path needs its own from-scratch verification plus
+  three more dependencies, the deliberate decision is to use the deprecated exporter here
+  and document the migration path for later, rather than take on that complexity now.
 
 ## Architecture
 
@@ -235,7 +242,10 @@ free of any OTel dependency, consistent with its existing design (it already tak
    (session_id/trace_id, review_outcome/errors) — a third touch for span-attribution
    precision alone isn't justified by anything this plan or Phase 3 currently needs.
 4. Creates one `tool.run_query` child span per query attempt, attributed with `sql`,
-   `bytes` (bytes processed), `job_id`, a `rows` count, and `denied`. **Important:**
+   `bytes` (bytes processed), `job_id` (denied/errored entries only — `ask()`'s result
+   doesn't expose a per-query row count anywhere, so succeeded-query spans carry only
+   `sql`/`bytes`/`denied`, not a row count; adding one would need yet another `ask()`
+   return-shape change this plan doesn't otherwise need), and `denied`. **Important:**
    `result["sql_list"]` cannot be safely zipped positionally against `result["job_ids"]`
    for this — `job_ids` filters out `None` entries (denied/errored queries), so the two
    lists can differ in length and order. `result["denials"]` and `result["errors"]` are
