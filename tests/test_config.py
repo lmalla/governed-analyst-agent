@@ -5,6 +5,7 @@ from agent.config import (
     get_agent_max_turns,
     get_agent_model,
     get_dataset,
+    get_grader_model,
     get_project_id,
     get_reviewer_model,
     resolve_persona_sa_email,
@@ -77,3 +78,14 @@ def test_get_agent_max_turns_reads_env(monkeypatch):
 def test_get_agent_max_turns_defaults_to_eight(monkeypatch):
     monkeypatch.delenv("AGENT_MAX_TURNS", raising=False)
     assert get_agent_max_turns() == 8
+
+
+def test_get_grader_model_reads_env(monkeypatch):
+    monkeypatch.setenv("GRADER_MODEL", "claude-haiku-4-5")
+    assert get_grader_model() == "claude-haiku-4-5"
+
+
+def test_get_grader_model_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("GRADER_MODEL", raising=False)
+    with pytest.raises(KeyError):
+        get_grader_model()

@@ -39,3 +39,7 @@ def get_reviewer_model() -> str:
 
 def get_agent_max_turns() -> int:
     return int(os.environ.get("AGENT_MAX_TURNS", "8"))
+
+
+def get_grader_model() -> str:
+    return os.environ["GRADER_MODEL"]
