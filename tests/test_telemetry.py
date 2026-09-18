@@ -43,8 +43,8 @@ def test_spans_are_captured_with_expected_attributes():
     # Exercises the actual span-creation shape cli.py (Task 4) will use,
     # via a directly-constructed TracerProvider + InMemorySpanExporter
     # (not telemetry.get_tracer() itself, since this test wants to inspect
-    # captured spans, which get_tracer()'s BatchSpanProcessor doesn't
-    # expose synchronously).
+    # captured spans synchronously and telemetry.get_tracer() builds its
+    # own fresh provider/exporter each call rather than exposing one here).
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))

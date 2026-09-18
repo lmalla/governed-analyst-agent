@@ -35,42 +35,58 @@ def _create_query_spans(tracer, result: dict) -> None:
     """One tool.run_query child span per query attempt.
 
     result["denials"]/result["errors"] are each already a list of full
-    {"sql": ..., "result": {...}} log entries. A "succeeded" span is
-    reconstructed for every sql_list entry that isn't in either of those
-    two lists, using the aggregate job_ids/bytes_processed/tables_referenced
-    fields -- exact per-succeeded-query byte attribution isn't separable
-    when more than one query succeeded in the same call, which is an
-    accepted simplification (see the design doc's Architecture §3).
+    {"sql": ..., "result": {...}} log entries -- each entry's own
+    result["bytes_processed"] is accurate per-entry (it comes from that
+    individual agent.tools.run_query call, not an aggregate), so it's
+    attached as-is. job_id is never attached on denied/error spans: every
+    failure path in agent/tools.py's run_query hardcodes job_id=None (a
+    failed dry run or query job never has a real BigQuery job ID to report),
+    so showing it there would always be empty/misleading.
+
+    A "success" span is reconstructed for every sql_list entry that isn't in
+    either of those two lists. Per-succeeded-query bytes/job_id are only
+    attached when exactly one query succeeded in the whole call -- with more
+    than one success, the aggregate result["bytes_processed"]/job_ids can't
+    be split between individual queries, so neither attribute is guessed at
+    (see the design doc's Architecture §3). Aggregate totals across the
+    whole call are always available on the agent.session root span instead.
     """
     denied_or_errored_sql = {e["sql"] for e in result["denials"]} | {e["sql"] for e in result["errors"]}
     for entry in result["denials"]:
         with tracer.start_as_current_span("tool.run_query", attributes={
-            "sql": entry["sql"], "denied": True, "bytes": entry["result"].get("bytes_processed") or 0,
-            "job_id": entry["result"].get("job_id") or "",
+            "sql": entry["sql"], "outcome": "denied", "bytes": entry["result"].get("bytes_processed") or 0,
         }):
             pass
     for entry in result["errors"]:
         with tracer.start_as_current_span("tool.run_query", attributes={
-            "sql": entry["sql"], "denied": False, "bytes": entry["result"].get("bytes_processed") or 0,
-            "job_id": entry["result"].get("job_id") or "",
+            "sql": entry["sql"], "outcome": "error", "bytes": entry["result"].get("bytes_processed") or 0,
         }):
             pass
-    for sql in result["sql_list"]:
-        if sql in denied_or_errored_sql:
-            continue
-        # No per-query row count is available here: ask()'s result doesn't
-        # expose it (only the raw run_query_log, which isn't part of the
-        # public contract, has each call's "rows" list) -- bytes/job_id are
-        # the aggregate totals across the whole call, same imprecision as
-        # the bytes attribution above.
-        with tracer.start_as_current_span("tool.run_query", attributes={
-            "sql": sql, "denied": False, "bytes": result["bytes_processed"],
-        }):
+    succeeded_sql = [sql for sql in result["sql_list"] if sql not in denied_or_errored_sql]
+    single_success = (
+        len(result["sql_list"]) - len(result["denials"]) - len(result["errors"]) == 1
+    )
+    for sql in succeeded_sql:
+        attributes = {"sql": sql, "outcome": "success"}
+        if single_success:
+            attributes["bytes"] = result["bytes_processed"]
+            attributes["job_id"] = result["job_ids"][0]
+        with tracer.start_as_current_span("tool.run_query", attributes=attributes):
             pass
 
 
 def _create_llm_turn_spans(tracer, mode: str, result: dict) -> None:
-    call_count = 2 if mode == "reviewed" else 1
+    """One llm.turn span per model call that actually produced a result.
+
+    mode="single" is always 1 call. mode="reviewed" is normally 2 (draft +
+    review), except when the review call never yielded a ResultMessage at
+    all (result["review_outcome"] == "review_failed") -- only the draft
+    call happened in that case, so only 1 span is emitted.
+    """
+    if mode == "reviewed" and result["review_outcome"] == "review_failed":
+        call_count = 1
+    else:
+        call_count = 2 if mode == "reviewed" else 1
     per_call_input = result["input_tokens"] // call_count
     per_call_output = result["output_tokens"] // call_count
     for _ in range(call_count):
@@ -82,24 +98,50 @@ def _create_llm_turn_spans(tracer, mode: str, result: dict) -> None:
 
 async def run_ask(question: str, persona: str, mode: str) -> dict:
     """The testable core of the `ask` command -- everything ask_command()
-    does, minus Typer's own arg parsing and asyncio.run() wrapper."""
-    client = _build_client(persona)
+    does, minus Typer's own arg parsing and asyncio.run() wrapper.
+
+    A lineage record is written no matter how this ends: on success it
+    carries the full result, and on any exception (building the client,
+    getting a tracer, or agent.ask() itself) it carries whatever trace_id
+    was available plus the error message, so no run is ever silently
+    missing from the audit trail. The original exception is always
+    re-raised afterward -- this is purely about not losing the record,
+    not about suppressing the failure from run_ask's caller.
+    """
     session_id = str(uuid.uuid4())
-    tracer = telemetry.get_tracer()
-    with tracer.start_as_current_span("agent.session", attributes={
-        "persona": persona, "mode": mode, "question_hash": _question_hash(question),
-    }) as span:
-        trace_id = format(span.get_span_context().trace_id, "032x")
-        result = await agent.ask(
-            question, persona, client, mode=mode, trace_id=trace_id, session_id=session_id
+    trace_id = None
+    try:
+        client = _build_client(persona)
+        tracer = telemetry.get_tracer()
+        with tracer.start_as_current_span("agent.session", attributes={
+            "persona": persona, "mode": mode, "question_hash": _question_hash(question),
+        }) as span:
+            trace_id = format(span.get_span_context().trace_id, "032x")
+            result = await agent.ask(
+                question, persona, client, mode=mode, trace_id=trace_id, session_id=session_id
+            )
+            _create_llm_turn_spans(tracer, mode, result)
+            _create_query_spans(tracer, result)
+            span.set_attributes({
+                "bytes_processed": result["bytes_processed"],
+                "job_ids": result["job_ids"],
+                "input_tokens": result["input_tokens"],
+                "output_tokens": result["output_tokens"],
+            })
+    except Exception as e:
+        lineage.write_record(
+            path=LINEAGE_PATH, question=question, persona=persona, mode=mode,
+            session_id=session_id, result={"trace_id": trace_id}, error=str(e),
         )
-        _create_llm_turn_spans(tracer, mode, result)
-        _create_query_spans(tracer, result)
-    lineage.write_record(LINEAGE_PATH, question, persona, mode, session_id, result)
+        raise
+    lineage.write_record(
+        path=LINEAGE_PATH, question=question, persona=persona, mode=mode,
+        session_id=session_id, result=result,
+    )
     return result
 
 
-@app.command()
+@app.command("ask")
 def ask_command(
     question: str,
     persona: str = typer.Option(..., "--persona"),
