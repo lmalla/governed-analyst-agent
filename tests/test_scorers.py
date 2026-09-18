@@ -70,6 +70,30 @@ def test_correctness_result_set_with_no_log_entries_compares_empty_actual_rows()
     assert result["pass"] is True
 
 
+def test_correctness_result_set_ignores_column_alias_differences():
+    # Found via a real eval run: the agent's own SQL used "customer_count"
+    # where the golden SQL used "n" for the identical COUNT(*) value -- a
+    # column-name mismatch, not a data mismatch, and must not fail the case.
+    log = [_run_query_log_entry(
+        "SELECT region, COUNT(*) AS customer_count FROM t GROUP BY region",
+        rows=[{"region": "West", "customer_count": 707}, {"region": "East", "customer_count": 638}],
+    )]
+    golden = [{"region": "East", "n": 638}, {"region": "West", "n": 707}]
+    case = {"compare": "result_set"}
+    result = correctness(case, log, golden, answer="")
+    assert result["pass"] is True
+
+
+def test_correctness_scalar_ignores_alias_and_tolerates_float_noise():
+    # Found via the same real run: "total_amount" vs golden's "total", plus
+    # ordinary SQL floating-point noise (1805630.8099999875 vs 1805630.81).
+    log = [_run_query_log_entry("SELECT SUM(amount) AS total_amount FROM t", rows=[{"total_amount": 1805630.8099999875}])]
+    golden = [{"total": 1805630.81}]
+    case = {"compare": "scalar"}
+    result = correctness(case, log, golden, answer="")
+    assert result["pass"] is True
+
+
 def test_rows_equal_sort_does_not_crash_on_mixed_type_columns():
     # A column named "v" holding an int in one row and a str in another used
     # to raise TypeError inside sorted() -- see _rows_equal's sort key fix.
