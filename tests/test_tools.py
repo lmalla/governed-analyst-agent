@@ -190,6 +190,20 @@ def test_run_query_omits_trace_id_label_when_not_provided():
     assert "trace_id" not in real_call_config.labels
 
 
+def test_run_query_attaches_session_id_label():
+    client = FakeClient(query_job=FakeQueryJob(rows=[]))
+    run_query(client, "SELECT 1", persona="analyst", session_id="session-xyz")
+    _, real_call_config = client.query_calls[1]  # [0] is the dry run
+    assert real_call_config.labels["session_id"] == "session-xyz"
+
+
+def test_run_query_omits_session_id_label_when_not_provided():
+    client = FakeClient(query_job=FakeQueryJob(rows=[]))
+    run_query(client, "SELECT 1", persona="analyst")
+    _, real_call_config = client.query_calls[1]
+    assert "session_id" not in real_call_config.labels
+
+
 def test_run_query_caps_returned_rows(monkeypatch):
     monkeypatch.setenv("MAX_ROWS_RETURNED", "2")
     real_job = FakeQueryJob(rows=[{"n": 1}, {"n": 2}, {"n": 3}])

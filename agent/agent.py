@@ -31,17 +31,25 @@ def _wrap_tool_result(data=None, error=None) -> dict:
     }
 
 
-def _build_warehouse_tools(client: bigquery.Client, persona: str, run_query_log: list[dict]):
+def _build_warehouse_tools(
+    client: bigquery.Client,
+    persona: str,
+    run_query_log: list[dict],
+    trace_id: str | None = None,
+    session_id: str | None = None,
+):
     """Builds the three SdkMcpTool objects (from the @tool decorator).
 
     Split out from build_tool_server so tests can call each tool's .handler
     directly without going through the full MCP server/transport machinery.
-    client and persona are bound via closure so neither is ever a model-settable
-    tool argument (BUILD_SPEC: "No tool takes a persona argument"). run_query_log
-    is a plain list the caller owns; every run_query call that actually reaches
-    agent.tools.run_query appends its sql and raw result dict to it (a call
-    rejected by SQL validation before reaching BigQuery is not logged, since no
-    query was attempted).
+    client, persona, trace_id, and session_id are all bound via closure so
+    none is ever a model-settable tool argument (BUILD_SPEC: "No tool takes
+    a persona argument" -- the same reasoning applies to trace_id/session_id,
+    which are caller-supplied observability metadata, not something a model
+    should be able to set). run_query_log is a plain list the caller owns;
+    every run_query call that actually reaches agent.tools.run_query appends
+    its sql and raw result dict to it (a call rejected by SQL validation
+    before reaching BigQuery is not logged, since no query was attempted).
     """
 
     @tool("list_tables", "List tables in the governed dataset.", {})
@@ -72,7 +80,7 @@ def _build_warehouse_tools(client: bigquery.Client, persona: str, run_query_log:
     async def run_query_tool(args: dict) -> dict:
         sql = args["sql"]
         try:
-            result = tools.run_query(client, sql, persona)
+            result = tools.run_query(client, sql, persona, trace_id=trace_id, session_id=session_id)
         except (Forbidden, BadRequest, NotFound, ValueError) as e:
             # ValueError: tools.run_query raises this for SQL that fails
             # validation (not a single SELECT/WITH) before it ever reaches
@@ -90,9 +98,17 @@ def _build_warehouse_tools(client: bigquery.Client, persona: str, run_query_log:
     return [list_tables_tool, describe_table_tool, run_query_tool]
 
 
-def build_tool_server(client: bigquery.Client, persona: str, run_query_log: list[dict]):
+def build_tool_server(
+    client: bigquery.Client,
+    persona: str,
+    run_query_log: list[dict],
+    trace_id: str | None = None,
+    session_id: str | None = None,
+):
     """Builds the in-process MCP server exposing list_tables/describe_table/run_query."""
-    warehouse_tools = _build_warehouse_tools(client, persona, run_query_log)
+    warehouse_tools = _build_warehouse_tools(
+        client, persona, run_query_log, trace_id=trace_id, session_id=session_id
+    )
     return create_sdk_mcp_server(name="warehouse", version="1.0.0", tools=warehouse_tools)
 
 
@@ -121,17 +137,24 @@ REVIEWER_SYSTEM_PROMPT = (
 )
 
 
-def _default_tool_server_factory(client: bigquery.Client, persona: str):
+def _default_tool_server_factory(
+    client: bigquery.Client,
+    persona: str,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+):
     """Builds a fresh tool server and the run_query_log it logs into.
 
     Split out as its own factory (rather than inlined in _run_single) so
     tests can inject a pre-seeded run_query_log and a trivial fake server —
     letting orchestration tests (does ask() correctly read a ResultMessage
     and assemble the structured result) run independently of the tool-
-    wrapper tests Task 1 already covers.
+    wrapper tests Task 1 [of Plan 2B] already covers.
     """
     run_query_log: list[dict] = []
-    server = build_tool_server(client, persona, run_query_log)
+    server = build_tool_server(
+        client, persona, run_query_log, trace_id=trace_id, session_id=session_id
+    )
     return server, run_query_log
 
 
@@ -146,6 +169,15 @@ def _build_review_prompt(question: str, draft_answer: str, run_query_log: list[d
         f"<draft_answer>\n{draft_answer}\n</draft_answer>\n\n"
         f"<query_results>\n{queries_summary}\n</query_results>"
     )
+
+
+def _classify_review_response(review_text: str) -> str:
+    stripped = review_text.strip()
+    if stripped.startswith("REVISED:"):
+        return "revised"
+    if stripped.startswith("APPROVED"):
+        return "approved"
+    return "unrecognized"
 
 
 def _combine_draft_and_review(draft: str, review_text: str) -> str:
@@ -169,9 +201,11 @@ async def _run_single(
     max_turns: int,
     query_fn,
     tool_server_factory=_default_tool_server_factory,
+    trace_id: str | None = None,
+    session_id: str | None = None,
 ):
     """Runs one drafting agent call. Returns (answer_text, run_query_log, usage)."""
-    server, run_query_log = tool_server_factory(client, persona)
+    server, run_query_log = tool_server_factory(client, persona, trace_id=trace_id, session_id=session_id)
     options = ClaudeAgentOptions(
         model=config.get_agent_model(),
         tools=[],
@@ -201,6 +235,8 @@ async def _run_reviewed(
     max_turns: int,
     query_fn,
     tool_server_factory=_default_tool_server_factory,
+    trace_id: str | None = None,
+    session_id: str | None = None,
 ):
     """Runs the drafting call, then a deterministic, tools-disabled review call.
 
@@ -208,7 +244,8 @@ async def _run_reviewed(
     agent's discretion whether to invoke a reviewer.
     """
     draft, run_query_log, usage_1 = await _run_single(
-        question, client, persona, max_turns, query_fn, tool_server_factory
+        question, client, persona, max_turns, query_fn, tool_server_factory,
+        trace_id=trace_id, session_id=session_id,
     )
     review_prompt = _build_review_prompt(question, draft, run_query_log)
     review_options = ClaudeAgentOptions(
@@ -227,11 +264,14 @@ async def _run_reviewed(
         # The review call itself never yielded a ResultMessage. The design's
         # fail-safe-to-draft principle (an unrecognized review response keeps
         # the draft) extends to this case too: fall back to the draft answer
-        # and count only the drafting call's usage.
-        return draft, run_query_log, usage_1
-    final_answer = _combine_draft_and_review(draft, review_result_message.result or "")
+        # and count only the drafting call's usage. "review_failed" is a
+        # distinct outcome from "unrecognized" -- the reviewer never
+        # responded at all, versus responding without a recognized prefix.
+        return draft, run_query_log, usage_1, "review_failed"
+    review_text = review_result_message.result or ""
+    final_answer = _combine_draft_and_review(draft, review_text)
     combined_usage = _sum_usage(usage_1, review_result_message.usage or {})
-    return final_answer, run_query_log, combined_usage
+    return final_answer, run_query_log, combined_usage, _classify_review_response(review_text)
 
 
 async def ask(
@@ -241,6 +281,8 @@ async def ask(
     mode: str = "single",
     query_fn=query,
     tool_server_factory=_default_tool_server_factory,
+    trace_id: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     if persona not in config.PERSONAS:
         raise ValueError(f"Unknown persona: {persona!r}. Valid personas: {sorted(config.PERSONAS)}")
@@ -251,11 +293,14 @@ async def ask(
     start = time.monotonic()
     if mode == "single":
         answer, run_query_log, usage = await _run_single(
-            question, client, persona, max_turns, query_fn, tool_server_factory
+            question, client, persona, max_turns, query_fn, tool_server_factory,
+            trace_id=trace_id, session_id=session_id,
         )
+        review_outcome = None
     else:
-        answer, run_query_log, usage = await _run_reviewed(
-            question, client, persona, max_turns, query_fn, tool_server_factory
+        answer, run_query_log, usage, review_outcome = await _run_reviewed(
+            question, client, persona, max_turns, query_fn, tool_server_factory,
+            trace_id=trace_id, session_id=session_id,
         )
     latency_ms = int((time.monotonic() - start) * 1000)
 
@@ -273,6 +318,11 @@ async def ask(
             entry["result"]["bytes_processed"] or 0 for entry in run_query_log
         ),
         "denials": [entry for entry in run_query_log if entry["result"]["denied"]],
+        "errors": [
+            entry for entry in run_query_log
+            if entry["result"].get("error") is not None and not entry["result"]["denied"]
+        ],
+        "review_outcome": review_outcome,
         # VERIFY: ResultMessage.usage is an untyped dict (claude_agent_sdk 0.2.154's
         # own type hint is dict[str, Any]) — input_tokens/output_tokens assumed to
         # match the direct Anthropic Messages API's standard usage keys. .get(...)
@@ -281,5 +331,5 @@ async def ask(
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
         "latency_ms": latency_ms,
-        "trace_id": None,  # wired in Plan 2C once agent/telemetry.py exists
+        "trace_id": trace_id,
     }

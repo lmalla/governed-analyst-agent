@@ -91,6 +91,7 @@ def run_query(
     sql: str,
     persona: str,
     trace_id: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     if persona not in config.PERSONAS:
         raise ValueError(f"Unknown persona: {persona!r}. Valid personas: {sorted(config.PERSONAS)}")
@@ -116,6 +117,8 @@ def run_query(
     labels = {"app": "governed-agent", "persona": persona}
     if trace_id:
         labels["trace_id"] = trace_id
+    if session_id:
+        labels["session_id"] = session_id
 
     max_bytes_billed = int(os.environ.get("MAX_BYTES_BILLED", "100000000"))
     max_rows_returned = int(os.environ.get("MAX_ROWS_RETURNED", "200"))

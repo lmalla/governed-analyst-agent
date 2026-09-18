@@ -100,7 +100,10 @@ def test_run_query_tool_wraps_success_and_logs(monkeypatch):
         "denied": False, "rows": [{"n": 1}], "job_id": "j1",
         "bytes_processed": 100, "tables_referenced": ["p.d.customers"],
     }
-    monkeypatch.setattr(tools_module, "run_query", lambda client, sql, persona: fake_result)
+    monkeypatch.setattr(
+        tools_module, "run_query",
+        lambda client, sql, persona, trace_id=None, session_id=None: fake_result,
+    )
     by_name, log = _tools_by_name()
     result = _run(by_name["run_query"].handler({"sql": "SELECT 1"}))
     payload = json.loads(result["content"][0]["text"])
@@ -116,7 +119,10 @@ def test_run_query_tool_wraps_denied_result_without_marking_is_error(monkeypatch
         "denied": True, "error": "Forbidden", "job_id": None,
         "bytes_processed": None, "tables_referenced": [],
     }
-    monkeypatch.setattr(tools_module, "run_query", lambda client, sql, persona: denied_result)
+    monkeypatch.setattr(
+        tools_module, "run_query",
+        lambda client, sql, persona, trace_id=None, session_id=None: denied_result,
+    )
     by_name, log = _tools_by_name()
     result = _run(by_name["run_query"].handler({"sql": "SELECT email FROM customers"}))
     payload = json.loads(result["content"][0]["text"])
@@ -126,7 +132,7 @@ def test_run_query_tool_wraps_denied_result_without_marking_is_error(monkeypatch
 
 
 def test_run_query_tool_catches_value_error_without_logging(monkeypatch):
-    def raise_value_error(client, sql, persona):
+    def raise_value_error(client, sql, persona, trace_id=None, session_id=None):
         raise ValueError("Only SELECT/WITH statements are allowed, got Create")
     monkeypatch.setattr(tools_module, "run_query", raise_value_error)
     by_name, log = _tools_by_name()
@@ -144,7 +150,7 @@ def test_run_query_tool_catches_not_found_without_logging(monkeypatch):
     # propagate out uncaught -- run_query_tool must still catch it and wrap
     # it in the uniform {"ok": false, "error": ...} envelope, same as
     # list_tables_tool/describe_table_tool already do.
-    def raise_not_found(client, sql, persona):
+    def raise_not_found(client, sql, persona, trace_id=None, session_id=None):
         raise NotFound("Not found: Table proj.ds.bogus")
     monkeypatch.setattr(tools_module, "run_query", raise_not_found)
     by_name, log = _tools_by_name()
@@ -157,7 +163,7 @@ def test_run_query_tool_catches_not_found_without_logging(monkeypatch):
 
 
 def test_run_query_tool_catches_bad_request_without_logging(monkeypatch):
-    def raise_bad_request(client, sql, persona):
+    def raise_bad_request(client, sql, persona, trace_id=None, session_id=None):
         raise BadRequest("Invalid column name bogus_col")
     monkeypatch.setattr(tools_module, "run_query", raise_bad_request)
     by_name, log = _tools_by_name()
@@ -176,7 +182,7 @@ def test_run_query_tool_input_schema_has_no_persona_field():
 
 def test_run_query_tool_binds_persona_from_closure_not_args(monkeypatch):
     captured = {}
-    def fake_run_query(client, sql, persona):
+    def fake_run_query(client, sql, persona, trace_id=None, session_id=None):
         captured["persona"] = persona
         return {"denied": False, "rows": [], "job_id": "j", "bytes_processed": 0, "tables_referenced": []}
     monkeypatch.setattr(tools_module, "run_query", fake_run_query)
@@ -216,7 +222,7 @@ def _fake_query_fn_yielding(*messages):
 
 
 def _seeded_factory(run_query_log):
-    def factory(client, persona):
+    def factory(client, persona, trace_id=None, session_id=None):
         return {"type": "sdk", "name": "warehouse", "instance": None}, run_query_log
     return factory
 
@@ -495,3 +501,160 @@ def test_ask_reviewed_mode_options_enforce_strict_governance(monkeypatch):
     assert not getattr(review_options, "mcp_servers", None)
     assert review_options.strict_mcp_config is True
     assert review_options.setting_sources == []
+
+
+# --- trace_id/session_id threading through the tool wrapper ---
+
+def test_run_query_tool_passes_trace_id_and_session_id_to_tools_run_query(monkeypatch):
+    captured = {}
+    def fake_run_query(client, sql, persona, trace_id=None, session_id=None):
+        captured["trace_id"] = trace_id
+        captured["session_id"] = session_id
+        return {"denied": False, "rows": [], "job_id": "j", "bytes_processed": 0, "tables_referenced": []}
+    monkeypatch.setattr(tools_module, "run_query", fake_run_query)
+    by_name = {
+        t.name: t for t in _build_warehouse_tools(
+            client=object(), persona="analyst", run_query_log=[],
+            trace_id="trace-abc", session_id="session-xyz",
+        )
+    }
+    _run(by_name["run_query"].handler({"sql": "SELECT 1"}))
+    assert captured["trace_id"] == "trace-abc"
+    assert captured["session_id"] == "session-xyz"
+
+
+# --- _classify_review_response ---
+
+def test_classify_review_response_approved():
+    from agent.agent import _classify_review_response
+    assert _classify_review_response("APPROVED") == "approved"
+
+
+def test_classify_review_response_revised():
+    from agent.agent import _classify_review_response
+    assert _classify_review_response("REVISED: fixed answer") == "revised"
+
+
+def test_classify_review_response_unrecognized():
+    from agent.agent import _classify_review_response
+    assert _classify_review_response("I'm not sure.") == "unrecognized"
+
+
+def test_classify_review_response_tolerates_leading_whitespace():
+    from agent.agent import _classify_review_response
+    assert _classify_review_response("  \nREVISED: fixed") == "revised"
+
+
+# --- ask()'s review_outcome field ---
+
+def test_ask_single_mode_review_outcome_is_none(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
+    result = _run(ask(
+        "q", "analyst", client=object(), mode="single",
+        query_fn=_fake_query_fn_yielding(_result_message(result="answer")),
+        tool_server_factory=_seeded_factory([]),
+    ))
+    assert result["review_outcome"] is None
+
+
+def test_ask_reviewed_mode_review_outcome_approved(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
+    monkeypatch.setenv("REVIEWER_MODEL", "claude-haiku-4-5")
+    draft_message = _result_message(result="3 regions.")
+    review_message = _result_message(result="APPROVED")
+    call_count = {"n": 0}
+    async def sequenced_query_fn(*, prompt, options):
+        call_count["n"] += 1
+        yield draft_message if call_count["n"] == 1 else review_message
+    result = _run(ask(
+        "q", "analyst", client=object(), mode="reviewed",
+        query_fn=sequenced_query_fn, tool_server_factory=_seeded_factory([]),
+    ))
+    assert result["review_outcome"] == "approved"
+
+
+def test_ask_reviewed_mode_review_outcome_revised(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
+    monkeypatch.setenv("REVIEWER_MODEL", "claude-haiku-4-5")
+    draft_message = _result_message(result="3 regions.")
+    review_message = _result_message(result="REVISED: 2 regions.")
+    call_count = {"n": 0}
+    async def sequenced_query_fn(*, prompt, options):
+        call_count["n"] += 1
+        yield draft_message if call_count["n"] == 1 else review_message
+    result = _run(ask(
+        "q", "analyst", client=object(), mode="reviewed",
+        query_fn=sequenced_query_fn, tool_server_factory=_seeded_factory([]),
+    ))
+    assert result["review_outcome"] == "revised"
+
+
+def test_ask_reviewed_mode_review_outcome_unrecognized(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
+    monkeypatch.setenv("REVIEWER_MODEL", "claude-haiku-4-5")
+    draft_message = _result_message(result="3 regions.")
+    review_message = _result_message(result="I have no opinion.")
+    call_count = {"n": 0}
+    async def sequenced_query_fn(*, prompt, options):
+        call_count["n"] += 1
+        yield draft_message if call_count["n"] == 1 else review_message
+    result = _run(ask(
+        "q", "analyst", client=object(), mode="reviewed",
+        query_fn=sequenced_query_fn, tool_server_factory=_seeded_factory([]),
+    ))
+    assert result["review_outcome"] == "unrecognized"
+
+
+def test_ask_reviewed_mode_review_outcome_review_failed(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
+    monkeypatch.setenv("REVIEWER_MODEL", "claude-haiku-4-5")
+    draft_message = _result_message(result="3 regions.")
+    call_count = {"n": 0}
+    async def sequenced_query_fn(*, prompt, options):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            yield draft_message
+        # second call (the review) yields nothing -- empty stream
+    result = _run(ask(
+        "q", "analyst", client=object(), mode="reviewed",
+        query_fn=sequenced_query_fn, tool_server_factory=_seeded_factory([]),
+    ))
+    assert result["review_outcome"] == "review_failed"
+    assert result["answer"] == "3 regions."  # fail-safe to the draft
+
+
+# --- ask()'s errors field ---
+
+def test_ask_single_mode_errors_field_separates_from_denials(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
+    denied_entry = {"sql": "SELECT email FROM customers", "result": {
+        "denied": True, "error": "Forbidden", "job_id": None,
+        "bytes_processed": None, "tables_referenced": [],
+    }}
+    error_entry = {"sql": "SELECT bogus_col FROM customers", "result": {
+        "denied": False, "error": "Bad Request: no such column", "job_id": None,
+        "bytes_processed": 100, "tables_referenced": ["p.d.customers"],
+    }}
+    ok_entry = {"sql": "SELECT region FROM customers", "result": {
+        "denied": False, "rows": [], "job_id": "j1",
+        "bytes_processed": 300, "tables_referenced": ["p.d.customers"],
+    }}
+    result = _run(ask(
+        "q", "analyst", client=object(), mode="single",
+        query_fn=_fake_query_fn_yielding(_result_message(result="done")),
+        tool_server_factory=_seeded_factory([denied_entry, error_entry, ok_entry]),
+    ))
+    assert result["denials"] == [denied_entry]
+    assert result["errors"] == [error_entry]
+
+
+# --- ask()'s trace_id echoing ---
+
+def test_ask_echoes_caller_supplied_trace_id(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
+    result = _run(ask(
+        "q", "analyst", client=object(), mode="single",
+        query_fn=_fake_query_fn_yielding(_result_message(result="answer")),
+        tool_server_factory=_seeded_factory([]), trace_id="trace-abc", session_id="session-xyz",
+    ))
+    assert result["trace_id"] == "trace-abc"
