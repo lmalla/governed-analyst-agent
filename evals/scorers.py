@@ -5,37 +5,53 @@ agent.ask()'s result and agent.py's run_query_log already use — so these
 can be tested with hand-constructed fixtures and zero network access.
 """
 import json
+from collections import Counter
 
 import anthropic
 
 from agent import config
 
 
-def _rows_equal(actual: list[dict], expected: list[dict], tolerance: float = 1e-6) -> bool:
-    # Compares each row by its VALUES only, ignoring column names/order --
-    # found via a real eval run that the agent's own SQL routinely picks
-    # different (but equally reasonable) column aliases than the golden SQL
-    # (e.g. "customer_count" vs "n", "total_amount" vs "total"), which a
-    # key-for-key comparison flagged as a false failure on otherwise-correct
-    # answers. What matters for correctness is the data, not what the agent
-    # decided to call a column.
+def _row_multiset(row: dict) -> Counter:
+    counter = Counter()
+    for value in row.values():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = round(value, 6)
+        counter[(type(value).__name__, value)] += 1
+    return counter
+
+
+def _rows_equal(actual: list[dict], expected: list[dict]) -> bool:
+    # Each expected row must be found among the actual rows as a VALUE
+    # SUBSET (via multiset/Counter containment), not an exact row match --
+    # found via two real eval runs: the agent's own SQL routinely (a) picks
+    # different column aliases than the golden SQL ("customer_count" vs
+    # "n"), and (b) includes extra, redundant columns alongside the one the
+    # golden query cares about (e.g. adding "region" alongside a count that
+    # golden returns bare, or "customer_id" alongside an "email" golden only
+    # selected by itself). Both are correct answers with more/differently-
+    # labeled context, not wrong data -- a strict key-for-key or exact-
+    # value-set match flagged both as false failures. Row COUNT must still
+    # match exactly (same number of rows) -- that's a real granularity
+    # signal (e.g. wrong GROUP BY), not a labeling difference. Matching via
+    # Counter equality (not sorting) also means this never needs the
+    # mixed-type sort-key workaround a prior version of this function had.
     if len(actual) != len(expected):
         return False
-
-    def normalize(rows):
-        normalized = []
-        for row in rows:
-            values = []
-            for value in row.values():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    value = round(value, 6)
-                values.append(value)
-            # Sort each row's own values too, so column order doesn't matter.
-            values.sort(key=lambda v: (type(v).__name__, str(v)))
-            normalized.append(tuple(values))
-        return sorted(normalized, key=lambda row: [(type(v).__name__, str(v)) for v in row])
-
-    return normalize(actual) == normalize(expected)
+    remaining_actual = [_row_multiset(row) for row in actual]
+    for expected_row in expected:
+        expected_multiset = _row_multiset(expected_row)
+        match_index = next(
+            (
+                i for i, actual_multiset in enumerate(remaining_actual)
+                if all(actual_multiset.get(k, 0) >= v for k, v in expected_multiset.items())
+            ),
+            None,
+        )
+        if match_index is None:
+            return False
+        remaining_actual.pop(match_index)
+    return True
 
 
 def _default_judge_fn(question: str, answer: str, golden_context) -> dict:

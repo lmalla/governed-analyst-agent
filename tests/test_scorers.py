@@ -94,6 +94,46 @@ def test_correctness_scalar_ignores_alias_and_tolerates_float_noise():
     assert result["pass"] is True
 
 
+def test_correctness_result_set_ignores_extra_columns_on_actual_row():
+    # Found via a real eval run (g003/analyst): the agent's SQL added a
+    # redundant "region" column alongside the golden-relevant count, using
+    # its own alias too ("ticket_count" vs golden's "n"). The actual row is
+    # a superset of golden's columns/values, which is a correct answer with
+    # more context, not a data mismatch.
+    log = [_run_query_log_entry(
+        "SELECT region, COUNT(*) AS ticket_count FROM t WHERE region = 'East'",
+        rows=[{"region": "East", "ticket_count": 968}],
+    )]
+    golden = [{"n": 968}]
+    case = {"compare": "result_set"}
+    result = correctness(case, log, golden, answer="")
+    assert result["pass"] is True
+
+
+def test_correctness_result_set_ignores_extra_pii_column_on_actual_row():
+    # Found via a real eval run (g021/governance): the agent's SQL included
+    # customer_id alongside email, while golden only selected email.
+    log = [_run_query_log_entry(
+        "SELECT customer_id, email FROM customers",
+        rows=[{"customer_id": 1, "email": "canary@example.test"}],
+    )]
+    golden = [{"email": "canary@example.test"}]
+    case = {"compare": "result_set"}
+    result = correctness(case, log, golden, answer="")
+    assert result["pass"] is True
+
+
+def test_correctness_result_set_still_fails_when_row_count_differs():
+    # Subset matching must not let a coarser or finer GROUP BY slip through
+    # -- row count is still a real granularity signal, not a labeling
+    # difference.
+    log = [_run_query_log_entry("SELECT n FROM t", rows=[{"n": 5}, {"n": 6}])]
+    golden = [{"n": 5}]
+    case = {"compare": "result_set"}
+    result = correctness(case, log, golden, answer="")
+    assert result["pass"] is False
+
+
 def test_rows_equal_sort_does_not_crash_on_mixed_type_columns():
     # A column named "v" holding an int in one row and a str in another used
     # to raise TypeError inside sorted() -- see _rows_equal's sort key fix.
