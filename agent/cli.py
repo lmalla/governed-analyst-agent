@@ -13,9 +13,8 @@ import uuid
 from pathlib import Path
 
 import typer
-from google.cloud import bigquery
 
-from agent import agent, config, credentials, lineage, telemetry
+from agent import agent, credentials, lineage, telemetry
 
 app = typer.Typer()
 
@@ -24,11 +23,6 @@ LINEAGE_PATH = Path("lineage/records.jsonl")
 
 def _question_hash(question: str) -> str:
     return hashlib.sha256(question.encode()).hexdigest()[:16]
-
-
-def _build_client(persona: str) -> bigquery.Client:
-    creds = credentials.get_credentials(persona)
-    return bigquery.Client(project=config.get_project_id(), credentials=creds)
 
 
 def _create_query_spans(tracer, result: dict) -> None:
@@ -111,7 +105,7 @@ async def run_ask(question: str, persona: str, mode: str) -> dict:
     session_id = str(uuid.uuid4())
     trace_id = None
     try:
-        client = _build_client(persona)
+        client = credentials.build_client(persona)
         tracer = telemetry.get_tracer()
         with tracer.start_as_current_span("agent.session", attributes={
             "persona": persona, "mode": mode, "question_hash": _question_hash(question),

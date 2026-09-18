@@ -4,8 +4,9 @@ the same persona reuse the same Credentials object.
 """
 from google.auth import default as google_auth_default
 from google.auth import impersonated_credentials
+from google.cloud import bigquery
 
-from agent.config import resolve_persona_sa_email
+from agent.config import get_project_id, resolve_persona_sa_email
 
 # roles/bigquery.jobUser and roles/bigquery.dataViewer are the two roles
 # every persona SA has (see BUILD_SPEC.md §5); this scope covers both.
@@ -27,3 +28,8 @@ def get_credentials(persona: str) -> impersonated_credentials.Credentials:
     )
     _credentials_cache[persona] = creds
     return creds
+
+
+def build_client(persona: str) -> bigquery.Client:
+    creds = get_credentials(persona)
+    return bigquery.Client(project=get_project_id(), credentials=creds)

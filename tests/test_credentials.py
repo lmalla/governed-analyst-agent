@@ -50,3 +50,11 @@ def test_get_credentials_different_personas_get_different_objects():
     analyst_creds = get_credentials("analyst")
     governance_creds = get_credentials("governance")
     assert analyst_creds is not governance_creds
+
+
+from agent.credentials import build_client
+
+
+def test_build_client_returns_bigquery_client_for_correct_project():
+    client = build_client("analyst")
+    assert client.project == "test-project-123"

@@ -45,7 +45,7 @@ def _fake_result(**overrides):
 def test_run_ask_writes_lineage_record_and_returns_result(monkeypatch, tmp_path):
     lineage_path = tmp_path / "records.jsonl"
     monkeypatch.setattr(cli, "LINEAGE_PATH", lineage_path)
-    monkeypatch.setattr(cli, "_build_client", lambda persona: object())
+    monkeypatch.setattr(cli.credentials, "build_client", lambda persona: object())
     monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
     monkeypatch.setenv("OTEL_EXPORTER", "console")
 
@@ -68,7 +68,7 @@ def test_run_ask_writes_lineage_record_and_returns_result(monkeypatch, tmp_path)
 
 def test_run_ask_passes_trace_id_and_session_id_to_agent_ask(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "LINEAGE_PATH", tmp_path / "records.jsonl")
-    monkeypatch.setattr(cli, "_build_client", lambda persona: object())
+    monkeypatch.setattr(cli.credentials, "build_client", lambda persona: object())
     monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
     monkeypatch.setenv("OTEL_EXPORTER", "console")
 
@@ -95,7 +95,7 @@ def test_run_ask_writes_lineage_record_with_error_and_reraises_on_exception(monk
     original exception still propagates."""
     lineage_path = tmp_path / "records.jsonl"
     monkeypatch.setattr(cli, "LINEAGE_PATH", lineage_path)
-    monkeypatch.setattr(cli, "_build_client", lambda persona: object())
+    monkeypatch.setattr(cli.credentials, "build_client", lambda persona: object())
     monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
     monkeypatch.setenv("OTEL_EXPORTER", "console")
 
@@ -127,7 +127,7 @@ def test_run_ask_writes_lineage_record_with_error_when_client_build_fails(monkey
 
     def failing_build_client(persona):
         raise ValueError("bad creds")
-    monkeypatch.setattr(cli, "_build_client", failing_build_client)
+    monkeypatch.setattr(cli.credentials, "build_client", failing_build_client)
     monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
     monkeypatch.setenv("OTEL_EXPORTER", "console")
 
@@ -146,7 +146,7 @@ def test_run_ask_sets_aggregate_attributes_on_session_span(monkeypatch, tmp_path
     (bytes_processed, job_ids, input_tokens, output_tokens) regardless of
     how many queries ran."""
     monkeypatch.setattr(cli, "LINEAGE_PATH", tmp_path / "records.jsonl")
-    monkeypatch.setattr(cli, "_build_client", lambda persona: object())
+    monkeypatch.setattr(cli.credentials, "build_client", lambda persona: object())
     monkeypatch.setenv("AGENT_MODEL", "claude-sonnet-5")
 
     tracer, exporter = _in_memory_tracer()
