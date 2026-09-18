@@ -1,4 +1,4 @@
-.PHONY: setup preflight lint data dbt-build policy-tags smoke ask test
+.PHONY: setup preflight lint data dbt-build policy-tags smoke ask test eval-single eval-reviewed
 
 setup:
 	uv sync --group dev
@@ -32,3 +32,9 @@ ask:
 
 test:
 	uv run pytest -q
+
+eval-single:
+	set -a && . ./.env && set +a && uv run python -m evals.runner --mode single $(ARGS)
+
+eval-reviewed:
+	set -a && . ./.env && set +a && uv run python -m evals.runner --mode reviewed $(ARGS)
