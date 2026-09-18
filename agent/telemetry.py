@@ -30,7 +30,7 @@ import os
 
 from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
 
 from agent import config
 
@@ -41,5 +41,5 @@ def get_tracer(tracer_name: str = "governed-agent"):
     else:
         exporter = CloudTraceSpanExporter(project_id=config.get_project_id())
     provider = TracerProvider()
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
     return provider.get_tracer(tracer_name)

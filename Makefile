@@ -28,7 +28,7 @@ smoke:
 	set -a && . ./.env && set +a && bash scripts/smoke_test.sh
 
 ask:
-	set -a && . ./.env && set +a && uv run python -m agent.cli ask $(ARGS)
+	set -a && . ./.env && set +a && uv run python -m agent.cli $(ARGS)
 
 test:
 	uv run pytest -q
