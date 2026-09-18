@@ -112,13 +112,24 @@ def build_tool_server(
     return create_sdk_mcp_server(name="warehouse", version="1.0.0", tools=warehouse_tools)
 
 
-SYSTEM_PROMPT = (
-    "You are a data analyst agent with access to a governed BigQuery dataset "
-    "through the list_tables, describe_table, and run_query tools. Answer the "
-    "user's question using only these tools. If a tool reports a denial or "
-    "restriction, never attempt to work around it or guess at the restricted "
-    "data — report the denial to the user plainly, as part of your answer."
-)
+def _build_system_prompt() -> str:
+    # Found via a real make ask run: list_tables/describe_table only ever
+    # return bare table names (by design -- see tools.py), so without being
+    # told the dataset explicitly here, the agent has no way to construct a
+    # valid fully-qualified table reference for run_query and resorts to
+    # guessing dataset names.
+    qualified_dataset = f"{config.get_project_id()}.{config.get_dataset()}"
+    return (
+        "You are a data analyst agent with access to a governed BigQuery dataset "
+        "through the list_tables, describe_table, and run_query tools. All tables "
+        f"live in the dataset `{qualified_dataset}` -- always reference them in "
+        f"run_query's SQL fully qualified as `{qualified_dataset}.<table_name>` "
+        "(with backticks), never by a bare or partially-qualified name. Answer "
+        "the user's question using only these tools. If a tool reports a denial "
+        "or restriction, never attempt to work around it or guess at the "
+        "restricted data — report the denial to the user plainly, as part of "
+        "your answer."
+    )
 
 REVIEWER_SYSTEM_PROMPT = (
     "You are reviewing a data analyst agent's draft answer for correctness and "
@@ -222,7 +233,7 @@ async def _run_single(
             "mcp__warehouse__run_query",
         ],
         max_turns=max_turns,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=_build_system_prompt(),
         strict_mcp_config=True,
         setting_sources=[],
     )

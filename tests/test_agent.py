@@ -9,6 +9,17 @@ from agent import tools as tools_module
 from agent.agent import _build_warehouse_tools, _wrap_tool_result, build_tool_server
 
 
+@pytest.fixture(autouse=True)
+def _env_project_and_dataset(monkeypatch):
+    # _build_system_prompt() (added to fix a real permission bug found via
+    # make ask) reads GCP_PROJECT_ID/BQ_DATASET to tell the agent how to
+    # fully-qualify table references -- every test that reaches ask()/
+    # _run_single() now needs these set, same pattern as tests/test_credentials.py's
+    # env_project fixture.
+    monkeypatch.setenv("GCP_PROJECT_ID", "test-project-123")
+    monkeypatch.setenv("BQ_DATASET", "test_dataset")
+
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -201,10 +212,18 @@ def test_build_tool_server_returns_sdk_mcp_server_config():
 
 
 from agent.agent import (
+    _build_system_prompt,
     _combine_draft_and_review,
     _sum_usage,
     ask,
 )
+
+# --- _build_system_prompt (fix for a real permission-denial bug found via make ask) ---
+
+def test_build_system_prompt_tells_the_agent_the_fully_qualified_dataset():
+    prompt = _build_system_prompt()
+    assert "test-project-123.test_dataset" in prompt
+    assert "run_query" in prompt
 
 
 def _result_message(result="", usage=None, subtype="success"):
