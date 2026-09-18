@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+import pytest
+
 from evals import runner
 
 
@@ -60,6 +62,51 @@ def test_get_golden_rows_caches_across_calls(monkeypatch):
     rows2 = runner.get_golden_rows(client=object(), persona="analyst", sql="SELECT 1", cache=cache)
     assert rows1 == rows2 == [{"n": 1}]
     assert len(calls) == 1  # second call hit the cache, didn't call run_query again
+
+
+def test_get_golden_rows_raises_and_does_not_cache_on_denied(monkeypatch):
+    def fake_run_query(client, sql, persona):
+        return {"denied": True, "error": "Forbidden"}
+    monkeypatch.setattr(runner.tools, "run_query", fake_run_query)
+    cache = {}
+    with pytest.raises(RuntimeError, match="persona='analyst'"):
+        runner.get_golden_rows(client=object(), persona="analyst", sql="SELECT 1", cache=cache)
+    assert cache == {}  # nothing cached on failure
+
+
+def test_get_golden_rows_raises_and_does_not_cache_on_error(monkeypatch):
+    def fake_run_query(client, sql, persona):
+        return {"error": "some backend error"}
+    monkeypatch.setattr(runner.tools, "run_query", fake_run_query)
+    cache = {}
+    with pytest.raises(RuntimeError, match="some backend error"):
+        runner.get_golden_rows(client=object(), persona="analyst", sql="SELECT 1", cache=cache)
+    assert cache == {}
+
+
+# --- build_pii_reference_set: pagination ---
+
+def test_build_pii_reference_set_paginates_through_all_rows(monkeypatch):
+    monkeypatch.setenv("BQ_DATASET", "test_dataset")
+    monkeypatch.setenv("MAX_ROWS_RETURNED", "2")  # small page size to make pagination easy to exercise
+    calls = []
+
+    def fake_run_query(client, sql, persona):
+        calls.append(sql)
+        # First page (OFFSET 0) per base query returns a full page (2 rows,
+        # equal to MAX_ROWS_RETURNED), so pagination continues; the second
+        # page (OFFSET 2) returns a partial page (1 row), which stops it.
+        if "OFFSET 0" in sql:
+            return {"rows": [{"v": "a"}, {"v": "b"}]}
+        return {"rows": [{"v": "c"}]}
+
+    monkeypatch.setattr(runner.tools, "run_query", fake_run_query)
+    values = runner.build_pii_reference_set(client=object())
+    # 4 source queries (email, phone, full_name, body), each paginated in 2 calls = 8 calls
+    assert len(calls) == 8
+    assert all("ORDER BY v" in sql for sql in calls)
+    # rows collected from both pages of at least one query
+    assert "a" in values and "b" in values and "c" in values
 
 
 # --- capturing factory ---
@@ -171,6 +218,63 @@ def test_run_all_writes_jsonl_and_respects_limit(tmp_path, monkeypatch):
     assert written["case_id"] == "g001"
 
 
+def test_run_all_isolates_a_failing_item_and_still_writes_the_others(tmp_path, monkeypatch):
+    # One item raises (simulating fix #1's RuntimeError from a denied/errored
+    # golden query, or any other transient failure); run_all must not let
+    # asyncio.gather's default fail-fast behavior discard the other item's
+    # completed work.
+    monkeypatch.setenv("BQ_DATASET", "test_dataset")
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    (cases_dir / "spike.yaml").write_text(
+        "- id: g001\n  question: q1\n  personas: [analyst]\n"
+        "  golden_sql: \"SELECT 1 AS n\"\n  compare: scalar\n"
+        "- id: g002\n  question: q2\n  personas: [analyst]\n"
+        "  golden_sql: \"SELECT 1 AS n\"\n  compare: scalar\n"
+    )
+    results_dir = tmp_path / "results"
+    cache_path = tmp_path / "cache.json"
+    canaries_path = tmp_path / "canaries.json"
+    canaries_path.write_text("[]")
+
+    monkeypatch.setattr(runner.tools, "run_query", lambda client, sql, persona: {"rows": [{"n": 1}]})
+
+    async def fake_ask(question, persona, client, mode="single", tool_server_factory=None, **kwargs):
+        if question == "q1":
+            raise RuntimeError("simulated failure for g001")
+        _server, log = tool_server_factory(client, persona)
+        log.append({"sql": "SELECT 1 AS n", "result": {"rows": [{"n": 1}]}})
+        return _fake_result()
+
+    def fake_build_client(persona):
+        return object()
+
+    records = _run(runner.run_all(
+        mode="single", suites=["golden", "adversarial"], limit=None, concurrency=2,
+        cases_dir=cases_dir, results_dir=results_dir, golden_cache_path=cache_path,
+        canaries_path=canaries_path, build_client=fake_build_client, ask_fn=fake_ask,
+    ))
+    assert len(records) == 2  # both items produced a record despite one raising
+
+    by_case = {r["case_id"]: r for r in records}
+    failed = by_case["g001"]
+    assert failed["scores"] == {}
+    assert failed["answer"] is None
+    assert failed["trace_id"] is None
+    assert "simulated failure for g001" in failed["run_error"]
+    assert failed["persona"] == "analyst"
+    assert failed["mode"] == "single"
+    assert failed["question"] == "q1"
+
+    ok = by_case["g002"]
+    assert ok["scores"]["correctness"]["pass"] is True
+    assert "run_error" not in ok
+
+    jsonl_files = list(results_dir.glob("*_single.jsonl"))
+    lines = jsonl_files[0].read_text().splitlines()
+    assert len(lines) == 2  # the successful item's record was still written to disk
+
+
 def test_print_summary_handles_empty_and_mixed_records(capsys):
     records = [
         {"persona": "analyst", "scores": {
@@ -189,3 +293,67 @@ def test_print_summary_handles_empty_and_mixed_records(capsys):
     assert "analyst" in out
     assert "100%" in out  # correctness accuracy: 1/1 golden items passed
     assert "0%" in out    # adversarial pass rate: 0/1 passed
+
+
+def test_print_summary_excludes_failed_items_from_averages_and_counts_them_as_errors(capsys):
+    records = [
+        {"persona": "analyst", "scores": {
+            "correctness": {"pass": True}, "leak": {"pass": True},
+            "cost": {"input_tokens": 100, "output_tokens": 10, "bytes_processed": 200},
+            "latency": {"latency_ms": 50},
+        }},
+        # A failed item from run_all's exception-isolation path: scores == {}.
+        {"persona": "analyst", "scores": {}, "answer": None, "run_error": "boom"},
+    ]
+    runner.print_summary(records)
+    out = capsys.readouterr().out
+    assert "errors" in out
+    lines = [line for line in out.splitlines() if line.startswith("analyst")]
+    assert len(lines) == 1
+    assert lines[0].split()[-1] == "1"  # 1 error out of 2 items for this persona
+    assert "100%" in out  # accuracy computed only from the 1 scored item, not diluted by the failed one
+
+
+def test_print_summary_handles_persona_with_all_items_failed(capsys):
+    # Every item for this persona failed (scores == {}) -- averages must not
+    # raise ZeroDivisionError, and the persona should still show up with a
+    # full error count.
+    records = [
+        {"persona": "analyst", "scores": {}, "answer": None, "run_error": "boom"},
+    ]
+    runner.print_summary(records)  # must not raise
+    out = capsys.readouterr().out
+    assert "analyst" in out
+    lines = [line for line in out.splitlines() if line.startswith("analyst")]
+    assert lines[0].split()[-1] == "1"
+
+
+# --- main(): --suite validation ---
+
+def test_main_rejects_invalid_suite_value(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["runner.py", "--suite", "goldenn"])
+    with pytest.raises(SystemExit):
+        runner.main()
+    err = capsys.readouterr().err
+    assert "goldenn" in err
+
+
+def test_main_rejects_one_invalid_value_among_valid_ones(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["runner.py", "--suite", "golden,bogus"])
+    with pytest.raises(SystemExit):
+        runner.main()
+    err = capsys.readouterr().err
+    assert "bogus" in err
+
+
+def test_main_accepts_valid_suite_values(monkeypatch):
+    # Valid suite values must reach asyncio.run(run_all(...)) rather than
+    # erroring out -- stub asyncio.run so this doesn't do real work.
+    monkeypatch.setattr("sys.argv", ["runner.py", "--suite", "golden,adversarial"])
+    called = {}
+    def fake_asyncio_run(coro):
+        called["ran"] = True
+        coro.close()  # avoid "coroutine was never awaited" warning
+    monkeypatch.setattr(runner.asyncio, "run", fake_asyncio_run)
+    runner.main()
+    assert called.get("ran") is True

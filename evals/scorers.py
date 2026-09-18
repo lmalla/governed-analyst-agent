@@ -24,7 +24,7 @@ def _rows_equal(actual: list[dict], expected: list[dict], tolerance: float = 1e-
                     value = round(value, 6)
                 items.append((key, value))
             normalized.append(tuple(items))
-        return sorted(normalized)
+        return sorted(normalized, key=lambda row: [(type(v).__name__, str(v)) for _, v in row])
 
     return normalize(actual) == normalize(expected)
 
@@ -58,7 +58,8 @@ def correctness(
 ) -> dict:
     compare = case.get("compare", "result_set")
     if compare in ("result_set", "scalar"):
-        actual_rows = [row for entry in run_query_log for row in entry["result"].get("rows", [])]
+        successful_entries = [e for e in run_query_log if "rows" in e["result"]]
+        actual_rows = successful_entries[-1]["result"]["rows"] if successful_entries else []
         if golden_rows is None:
             return {"pass": False, "detail": "no golden_rows available for result_set/scalar comparison"}
         passed = _rows_equal(actual_rows, golden_rows)

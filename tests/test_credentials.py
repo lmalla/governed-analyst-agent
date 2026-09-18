@@ -3,7 +3,7 @@ from google.auth import impersonated_credentials
 from google.auth.credentials import AnonymousCredentials
 
 from agent import credentials as credentials_module
-from agent.credentials import get_credentials
+from agent.credentials import build_client, get_credentials
 
 
 @pytest.fixture(autouse=True)
@@ -50,9 +50,6 @@ def test_get_credentials_different_personas_get_different_objects():
     analyst_creds = get_credentials("analyst")
     governance_creds = get_credentials("governance")
     assert analyst_creds is not governance_creds
-
-
-from agent.credentials import build_client
 
 
 def test_build_client_returns_bigquery_client_for_correct_project():

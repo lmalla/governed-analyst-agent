@@ -11,6 +11,7 @@ dbt/profiles.yml
 dbt/.user.yml
 dbt/policy_tags.yml
 evals/results/*.jsonl
+evals/.golden_cache.json
 lineage/*.jsonl
 *.egg-info/
 .DS_Store

@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -75,6 +76,8 @@ def get_golden_rows(client, persona: str, sql: str, cache: dict) -> list[dict]:
     if key in cache:
         return cache[key]
     result = tools.run_query(client, sql, persona)
+    if result.get("denied") or result.get("error"):
+        raise RuntimeError(f"Golden SQL failed for persona={persona!r}: {result.get('error', 'denied')}")
     rows = result.get("rows", [])
     cache[key] = rows
     return rows
@@ -89,12 +92,20 @@ def build_pii_reference_set(client) -> list[str]:
         (f"SELECT full_name AS v FROM {dataset}.customers", "full_name"),
         (f"SELECT body AS v FROM {dataset}.support_tickets", "body"),
     ]
-    for sql, _label in queries:
-        result = tools.run_query(client, sql, "governance")
-        for row in result.get("rows", []):
-            v = row.get("v")
-            if v:
-                values.append(str(v))
+    page_size = int(os.environ.get("MAX_ROWS_RETURNED", "200"))
+    for base_sql, _label in queries:
+        offset = 0
+        while True:
+            sql = f"{base_sql} ORDER BY v LIMIT {page_size} OFFSET {offset}"
+            result = tools.run_query(client, sql, "governance")
+            rows = result.get("rows", [])
+            for row in rows:
+                v = row.get("v")
+                if v:
+                    values.append(str(v))
+            if len(rows) < page_size:
+                break
+            offset += page_size
     return values
 
 
@@ -180,10 +191,26 @@ async def run_all(
     pii_values = build_pii_reference_set(clients["governance"])
 
     semaphore = asyncio.Semaphore(concurrency)
-    records = await asyncio.gather(*[
-        run_item(case, persona, mode, clients, golden_cache, canaries, pii_values, semaphore, ask_fn=ask_fn)
-        for case, persona in items
-    ])
+    raw_results = await asyncio.gather(
+        *[
+            run_item(case, persona, mode, clients, golden_cache, canaries, pii_values, semaphore, ask_fn=ask_fn)
+            for case, persona in items
+        ],
+        return_exceptions=True,
+    )
+
+    records = []
+    for (case, persona), outcome in zip(items, raw_results):
+        if isinstance(outcome, Exception):
+            records.append({
+                "case_id": case["id"], "persona": persona, "mode": mode,
+                "question": case["question"], "answer": None,
+                "scores": {}, "trace_id": None,
+                "timestamp": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+                "run_error": str(outcome),
+            })
+        else:
+            records.append(outcome)
 
     save_golden_cache(golden_cache, golden_cache_path)
 
@@ -203,30 +230,41 @@ def print_summary(records: list[dict]) -> None:
     for r in records:
         by_persona.setdefault(r["persona"], []).append(r)
 
-    header = f"{'persona':<15} {'accuracy':>10} {'leak_ct':>8} {'adv_pass':>9} {'avg_tok':>9} {'avg_ms':>8} {'avg_bytes':>10}"
+    header = (
+        f"{'persona':<15} {'accuracy':>10} {'leak_ct':>8} {'adv_pass':>9} "
+        f"{'avg_tok':>9} {'avg_ms':>8} {'avg_bytes':>10} {'errors':>7}"
+    )
     print(header)
     for persona in sorted(by_persona):
         items = by_persona[persona]
-        golden_items = [r for r in items if "correctness" in r["scores"]]
-        adversarial_items = [r for r in items if "policy_behavior" in r["scores"]]
+        scored_items = [r for r in items if r["scores"]]
+        error_count = len(items) - len(scored_items)
+        golden_items = [r for r in scored_items if "correctness" in r["scores"]]
+        adversarial_items = [r for r in scored_items if "policy_behavior" in r["scores"]]
 
         accuracy_str = "N/A"
         if golden_items:
             accuracy = sum(1 for r in golden_items if r["scores"]["correctness"]["pass"]) / len(golden_items)
             accuracy_str = f"{accuracy:.0%}"
 
-        leak_count = sum(1 for r in items if not r["scores"]["leak"]["pass"])
+        leak_count = sum(1 for r in scored_items if not r["scores"]["leak"]["pass"])
 
         adv_pass_str = "N/A"
         if adversarial_items:
             adv_pass = sum(1 for r in adversarial_items if r["scores"]["policy_behavior"]["pass"]) / len(adversarial_items)
             adv_pass_str = f"{adv_pass:.0%}"
 
-        avg_tokens = sum(r["scores"]["cost"]["input_tokens"] + r["scores"]["cost"]["output_tokens"] for r in items) / len(items)
-        avg_latency = sum(r["scores"]["latency"]["latency_ms"] for r in items) / len(items)
-        avg_bytes = sum(r["scores"]["cost"]["bytes_processed"] for r in items) / len(items)
+        if scored_items:
+            avg_tokens = sum(r["scores"]["cost"]["input_tokens"] + r["scores"]["cost"]["output_tokens"] for r in scored_items) / len(scored_items)
+            avg_latency = sum(r["scores"]["latency"]["latency_ms"] for r in scored_items) / len(scored_items)
+            avg_bytes = sum(r["scores"]["cost"]["bytes_processed"] for r in scored_items) / len(scored_items)
+        else:
+            avg_tokens = avg_latency = avg_bytes = 0.0
 
-        print(f"{persona:<15} {accuracy_str:>10} {leak_count:>8} {adv_pass_str:>9} {avg_tokens:>9.0f} {avg_latency:>8.0f} {avg_bytes:>10.0f}")
+        print(
+            f"{persona:<15} {accuracy_str:>10} {leak_count:>8} {adv_pass_str:>9} "
+            f"{avg_tokens:>9.0f} {avg_latency:>8.0f} {avg_bytes:>10.0f} {error_count:>7}"
+        )
 
 
 def main() -> None:
@@ -237,6 +275,13 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, default=4)
     args = parser.parse_args()
     suites = args.suite.split(",")
+    valid_suites = {"golden", "adversarial"}
+    invalid = [s for s in suites if s not in valid_suites]
+    if invalid:
+        parser.error(
+            f"invalid --suite value(s): {', '.join(invalid)} "
+            f"(valid choices: {', '.join(sorted(valid_suites))})"
+        )
     asyncio.run(run_all(args.mode, suites, args.limit, args.concurrency))
 
 

@@ -42,12 +42,39 @@ def test_correctness_result_set_fails_when_golden_rows_missing():
     assert result["pass"] is False
 
 
-def test_correctness_aggregates_rows_across_multiple_log_entries():
+def test_correctness_uses_only_the_last_successful_query_not_all():
     log = [
-        _run_query_log_entry("SELECT a FROM t1", rows=[{"a": 1}]),
-        _run_query_log_entry("SELECT a FROM t2", rows=[{"a": 2}]),
+        _run_query_log_entry("SELECT DISTINCT region FROM t", rows=[{"region": "East"}, {"region": "West"}]),
+        _run_query_log_entry("SELECT region, n FROM t", rows=[{"region": "East", "n": 3}]),
     ]
-    golden = [{"a": 1}, {"a": 2}]
+    golden = [{"region": "East", "n": 3}]
+    case = {"compare": "result_set"}
+    result = correctness(case, log, golden, answer="")
+    assert result["pass"] is True  # only the last entry's rows are compared, not the exploratory first query
+
+
+def test_correctness_skips_log_entries_without_rows_key():
+    log = [
+        _run_query_log_entry("SELECT a FROM t", rows=[{"a": 1}]),
+        {"sql": "SELECT b FROM restricted", "result": {"denied": True, "error": "Forbidden"}},
+    ]
+    golden = [{"a": 1}]
+    case = {"compare": "result_set"}
+    result = correctness(case, log, golden, answer="")
+    assert result["pass"] is True  # the denied entry has no "rows" key and is correctly skipped
+
+
+def test_correctness_result_set_with_no_log_entries_compares_empty_actual_rows():
+    case = {"compare": "result_set"}
+    result = correctness(case, [], [], answer="")
+    assert result["pass"] is True
+
+
+def test_rows_equal_sort_does_not_crash_on_mixed_type_columns():
+    # A column named "v" holding an int in one row and a str in another used
+    # to raise TypeError inside sorted() -- see _rows_equal's sort key fix.
+    log = [_run_query_log_entry("SELECT v FROM t", rows=[{"v": 1}, {"v": "two"}])]
+    golden = [{"v": "two"}, {"v": 1}]
     case = {"compare": "result_set"}
     result = correctness(case, log, golden, answer="")
     assert result["pass"] is True

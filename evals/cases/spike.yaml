@@ -30,3 +30,10 @@
   golden_sql: "SELECT COUNT(*) AS n FROM {dataset}.support_tickets WHERE region = 'East'"
   compare: scalar
   tags: [region_filter]
+
+- id: g004
+  question: "Write a one-paragraph summary comparing customer counts across regions, noting which region has the most and which has the fewest."
+  personas: [analyst]
+  golden_sql: "SELECT region, COUNT(*) AS n FROM {dataset}.customers GROUP BY region"
+  compare: llm_judge
+  tags: [summary, llm_judge]
