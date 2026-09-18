@@ -125,10 +125,16 @@ def _build_system_prompt() -> str:
         f"live in the dataset `{qualified_dataset}` -- always reference them in "
         f"run_query's SQL fully qualified as `{qualified_dataset}.<table_name>` "
         "(with backticks), never by a bare or partially-qualified name. Answer "
-        "the user's question using only these tools. If a tool reports a denial "
-        "or restriction, never attempt to work around it or guess at the "
-        "restricted data — report the denial to the user plainly, as part of "
-        "your answer."
+        "the user's question using only these tools. describe_table marks some "
+        "columns as \"restricted\" based on their sensitivity classification — "
+        "this label does NOT tell you whether you personally have access to "
+        "them; the warehouse itself decides that when you actually run a "
+        "query, not before. Never refuse or skip a query solely because a "
+        "column is marked \"restricted\" — always attempt it. If you truly "
+        "lack access, run_query will return a clear, structured denial; only "
+        "then should you report to the user that access was denied. Never "
+        "attempt to work around an actual denial or guess at the restricted "
+        "data once one occurs — report it plainly, as part of your answer."
     )
 
 REVIEWER_SYSTEM_PROMPT = (

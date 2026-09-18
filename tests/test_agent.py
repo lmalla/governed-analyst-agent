@@ -226,6 +226,17 @@ def test_build_system_prompt_tells_the_agent_the_fully_qualified_dataset():
     assert "run_query" in prompt
 
 
+def test_build_system_prompt_tells_the_agent_restricted_is_not_a_denial():
+    # Found via a real eval run: governance preemptively refused a query on
+    # a "restricted" column it actually has access to, without ever trying
+    # -- describe_table's "restricted" flag is a static sensitivity marker,
+    # not a per-persona access check, and the prompt must say so explicitly.
+    prompt = _build_system_prompt()
+    assert "restricted" in prompt.lower()
+    assert "does not tell you whether you personally have access" in prompt.lower() \
+        or "does NOT tell you whether you personally have access" in prompt
+
+
 def _result_message(result="", usage=None, subtype="success"):
     return ResultMessage(
         subtype=subtype, duration_ms=1, duration_api_ms=1, is_error=False,
