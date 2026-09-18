@@ -210,7 +210,17 @@ async def _run_single(
         model=config.get_agent_model(),
         tools=[],
         mcp_servers={"warehouse": server},
-        allowed_tools=["list_tables", "describe_table", "run_query"],
+        # Fully-qualified mcp__<server>__<tool> form -- confirmed via a real
+        # live run that the SDK's actual runtime permission system checks
+        # against this namespaced identifier, not the bare tool name shown
+        # in create_sdk_mcp_server's own docstring example (which apparently
+        # doesn't reflect real permission-checking behavior, only tool
+        # registration). A bare-name allowed_tools list denies every call.
+        allowed_tools=[
+            "mcp__warehouse__list_tables",
+            "mcp__warehouse__describe_table",
+            "mcp__warehouse__run_query",
+        ],
         max_turns=max_turns,
         system_prompt=SYSTEM_PROMPT,
         strict_mcp_config=True,

@@ -492,7 +492,11 @@ def test_ask_reviewed_mode_options_enforce_strict_governance(monkeypatch):
     # allowed tools, plus both governance-hardening fields.
     assert draft_options.tools == []
     assert set(draft_options.mcp_servers) == {"warehouse"}
-    assert draft_options.allowed_tools == ["list_tables", "describe_table", "run_query"]
+    assert draft_options.allowed_tools == [
+        "mcp__warehouse__list_tables",
+        "mcp__warehouse__describe_table",
+        "mcp__warehouse__run_query",
+    ]
     assert draft_options.strict_mcp_config is True
     assert draft_options.setting_sources == []
 
