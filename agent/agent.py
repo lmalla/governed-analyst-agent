@@ -204,10 +204,29 @@ def _combine_draft_and_review(draft: str, review_text: str) -> str:
     return draft  # covers "APPROVED" and any unrecognized response, fail-safe to the draft
 
 
-def _sum_usage(usage_a: dict, usage_b: dict) -> dict:
+def _normalize_usage(usage: dict) -> dict:
+    """Total prompt tokens = fresh input + cache-creation + cache-read.
+
+    The SDK's usage dict reports prompt-cached tokens in separate keys and its
+    plain "input_tokens" excludes them (a live single-mode run showed
+    input_tokens=8 against ~6,000 real prompt tokens). Idempotent: a dict
+    already normalized has no cache keys, so re-normalizing is a no-op.
+    """
     return {
-        "input_tokens": usage_a.get("input_tokens", 0) + usage_b.get("input_tokens", 0),
-        "output_tokens": usage_a.get("output_tokens", 0) + usage_b.get("output_tokens", 0),
+        "input_tokens": (
+            usage.get("input_tokens", 0)
+            + usage.get("cache_creation_input_tokens", 0)
+            + usage.get("cache_read_input_tokens", 0)
+        ),
+        "output_tokens": usage.get("output_tokens", 0),
+    }
+
+
+def _sum_usage(usage_a: dict, usage_b: dict) -> dict:
+    a, b = _normalize_usage(usage_a), _normalize_usage(usage_b)
+    return {
+        "input_tokens": a["input_tokens"] + b["input_tokens"],
+        "output_tokens": a["output_tokens"] + b["output_tokens"],
     }
 
 
@@ -350,13 +369,9 @@ async def ask(
             if entry["result"].get("error") is not None and not entry["result"]["denied"]
         ],
         "review_outcome": review_outcome,
-        # VERIFY: ResultMessage.usage is an untyped dict (claude_agent_sdk 0.2.154's
-        # own type hint is dict[str, Any]) — input_tokens/output_tokens assumed to
-        # match the direct Anthropic Messages API's standard usage keys. .get(...)
-        # degrades to 0 rather than raising if that assumption is wrong; confirm
-        # against a real call during human-run real-world verification.
-        "input_tokens": usage.get("input_tokens", 0),
-        "output_tokens": usage.get("output_tokens", 0),
+        # ResultMessage.usage is an untyped dict; _normalize_usage folds the
+        # separately-reported prompt-cache tokens into input_tokens.
+        **_normalize_usage(usage),
         "latency_ms": latency_ms,
         "trace_id": trace_id,
     }

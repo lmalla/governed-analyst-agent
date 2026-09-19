@@ -214,6 +214,7 @@ def test_build_tool_server_returns_sdk_mcp_server_config():
 from agent.agent import (
     _build_system_prompt,
     _combine_draft_and_review,
+    _normalize_usage,
     _sum_usage,
     ask,
 )
@@ -271,6 +272,28 @@ def test_combine_revised_replaces_draft():
 def test_combine_unrecognized_response_falls_back_to_draft():
     result = _combine_draft_and_review("3 regions.", "I'm not sure how to respond.")
     assert result == "3 regions."
+
+
+# --- _normalize_usage ---
+
+def test_normalize_usage_includes_cache_tokens_in_input():
+    # Shape observed from a live single-mode run (input_tokens excluded the cache).
+    usage = {
+        "input_tokens": 8, "cache_creation_input_tokens": 1905,
+        "cache_read_input_tokens": 4091, "output_tokens": 300,
+    }
+    assert _normalize_usage(usage) == {"input_tokens": 6004, "output_tokens": 300}
+
+
+def test_normalize_usage_is_idempotent():
+    once = _normalize_usage({"input_tokens": 8, "cache_read_input_tokens": 100, "output_tokens": 5})
+    assert _normalize_usage(once) == once
+
+
+def test_sum_usage_counts_cache_tokens_from_both_calls():
+    a = {"input_tokens": 8, "cache_read_input_tokens": 1000, "output_tokens": 10}
+    b = {"input_tokens": 2, "cache_creation_input_tokens": 500, "output_tokens": 4}
+    assert _sum_usage(a, b) == {"input_tokens": 1510, "output_tokens": 14}
 
 
 # --- _sum_usage ---
